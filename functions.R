@@ -1,6 +1,5 @@
 #codes of functions for banding data
 
-Sys.setlocale("LC_ALL", "Japanese_Japan.932")
 #convert the location coordinates in place data from degrees and minutes to decimal degrees--------------------
 # function to convert
 convert_to_decimal <- function(coord) {

@@ -69,6 +69,9 @@ R.data <- R.data %>%
   anti_join(dup_dsp_list, by = "indID") %>% 
   dplyr::select(-indID)
 
+R.data %>% 
+  write.csv("../band_data.csv", row.names = FALSE)
+
 # Plotting data -----------------------------------------------------------
 Japan <- st_read("S:\\common\\personal_backup\\kumada\\Virbsagi\\R\\Japan_merge2.shp")
 
