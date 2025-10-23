@@ -7,7 +7,7 @@ library(purrr)
 Sys.setlocale("LC_ALL", "Japanese_Japan.932")
 source("functions.R", encoding = "UTF-8")
 
-# make data ---------------------------------------------------------------
+# Clean data ---------------------------------------------------------------
 #read.data
 data <- read.dbf("../../6118LANDBIRD.DBF", as.is = T)
 splist <- read.dbf("../../Splist.DBF", as.is = T)
@@ -34,7 +34,7 @@ data <- data %>% left_join(splist %>% dplyr::select(SPC,SPNAMK,SPNAME), by = "SP
 #filter data for the past 10 years
 R.data <- data %>% filter(YEAR > 2008)
 
-# ･clean data duplication --------------------------------------------------
+# Remove duplication --------------------------------------------------
 # filter STAT only "N"
 stat_n_data <- data %>% filter(STAT == "N")
 
@@ -69,8 +69,22 @@ R.data <- R.data %>%
   anti_join(dup_dsp_list, by = "indID") %>% 
   dplyr::select(-indID)
 
-R.data %>% 
-  write.csv("../band_data.csv", row.names = FALSE)
+R.data <- R.data %>% mutate(PCODE = if_else(PCODE == "910053", "110099", PCODE))
+
+#save R.data
+# R.data %>% 
+#   write.csv("../band_data.csv", row.names = FALSE)
+
+
+# Make data for ADCR model ------------------------------------------------
+
+# make effort data --------------------------------------------------------
+effort <- make.effort(data, 2008)
+
+# make detection data -----------------------------------------------------
+
+
+
 
 # Plotting data -----------------------------------------------------------
 Japan <- st_read("S:\\common\\personal_backup\\kumada\\Virbsagi\\R\\Japan_merge2.shp")

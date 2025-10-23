@@ -92,3 +92,23 @@ Num_capture_plot_all <- function(df,folder){
     ggsave(filename = paste0(folder, "capture_plot_group_", i, ".png"), plot = capture_plot[[i]], width = 10, height = 8)
   }
 }  
+
+
+# Make effort data --------------------------------------------------------
+make.effort <- function(data, year){
+  effort <- data %>% 
+    filter(YEAR > year) %>% #10年分データ
+    distinct(PCODE, DAY)
+  effort <- effort %>% mutate(PCODE = as.character(.$PCODE))
+  effort <- effort %>%  
+    group_by(PCODE) %>%
+    arrange(DAY, .by_group = TRUE) %>% 
+    mutate(effort_occ = row_number()) %>% 
+    ungroup() %>% 
+    mutate(effortID = row_number())
+  effort$effort <- rep(1, nrow(effort))
+  effort <- effort %>% mutate(PCODE = if_else(PCODE == "910053", "110099", PCODE))
+  return(effort)
+}
+
+
