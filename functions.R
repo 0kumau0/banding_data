@@ -1,5 +1,6 @@
 #codes of functions for banding data
 
+Sys.setlocale("LC_ALL", "Japanese_Japan.932")
 #convert the location coordinates in place data from degrees and minutes to decimal degrees--------------------
 # function to convert
 convert_to_decimal <- function(coord) {
@@ -8,7 +9,7 @@ convert_to_decimal <- function(coord) {
   return(deg + min / 60)
 }
 
-#histgram of num of catch per individual (all spcies)
+#bargraph of num of catch per individual (all spcies)
 Num_capture_plot_all <- function(df,folder){
   # 個体ごとの捕獲回数（GUID + RING で個体を識別）
   individual_counts <- df %>%
