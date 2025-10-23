@@ -9,6 +9,8 @@ convert_to_decimal <- function(coord) {
   return(deg + min / 60)
 }
 
+
+# plotting num of catch per ind -------------------------------------------
 #bargraph of num of catch per individual (all spcies)
 Num_capture_plot_all <- function(df,folder){
   # 個体ごとの捕獲回数（GUID + RING で個体を識別）
