@@ -112,3 +112,23 @@ make.effort <- function(data, year){
 }
 
 
+# SortSpbyCapturedNumber --------------------------------------------------
+count_individuals <- function(df){
+  # 個体ごとの捕獲回数（GUID + RING で個体を識別）
+  individual_counts <- df %>%
+    mutate(indiv_id = paste(GUID, RING, sep = "_")) %>%
+    group_by(SPNAMK, indiv_id) %>%
+    summarise(capture_count = n(), .groups = "drop")
+  
+  # 捕獲回数ごとの個体数（各種 × 回数ごと）
+  capture_freq <- individual_counts %>%
+    group_by(SPNAMK, capture_count) %>%
+    summarise(n_individuals = n(), .groups = "drop")
+  
+  # グラフ表示の順番を総個体数順にする
+  species_order <- capture_freq %>%
+    group_by(SPNAMK) %>%
+    summarise(total = sum(n_individuals), .groups = "drop") %>%
+    arrange(desc(total)) %>%
+    pull(SPNAMK)
+}
