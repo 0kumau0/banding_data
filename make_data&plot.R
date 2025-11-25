@@ -79,53 +79,13 @@ R.data <- R.data %>% mutate(PCODE = if_else(PCODE == "910053", "110099", PCODE))
 # Make data for ADCR model ------------------------------------------------
 
 # make effort data --------------------------------------------------------
-#effortは地点×日付数の行、effortはすべて1
-effort <- R.data %>% 
-  mutate(YEAR = substr(DAY, 1, 4)) %>% 
-  #filter(YEAR > 2013) %>% 
-  filter(YEAR > 2008) %>% #10年分データ
-  distinct(PCODE, DAY)
-effort <- effort %>% mutate(PCODE = as.character(.$PCODE))
-effort <- effort %>%  
-  group_by(PCODE) %>%
-  arrange(DAY, .by_group = TRUE) %>% 
-  mutate(effort_occ = row_number()) %>% 
-  ungroup() %>% 
-  mutate(effortID = row_number())
-effort$effort <- rep(1, nrow(effort))
-effort <- effort %>% mutate(PCODE = if_else(PCODE == "910053", "110099", PCODE))
 
 # make detection data -----------------------------------------------------
-splist <- count_individuals(R.data)
-splist_full <- count_individuals(data)
 
-#make list of dataset by sp 
-detect_list <- effort_list <- list()
-for (i in 1:length(splist)){ 
-  #種を選択
-  spp <- R.data %>% filter(SPNAMK == splist[i])
-  
-  #調査ID付与
-  spp <- spp %>% mutate(kaiID = paste0(PCODE,DAY))
-  
-  #effortのほうのeffortIDと結合 effortのほうのeffortIDをすべて保持
-  spp_1 <- spp %>% dplyr::select(PCODE, kaiID)
-  
-  #出現マトリクスの作成
-  presense_matrix <- spp %>% 
-    mutate(individualID = paste0(GUID,RING),
-           present = 1) %>% 
-    full_join(
-      effort %>% mutate(kaiID = paste0(PCODE,DAY)) %>% 
-        dplyr::select(effortID, kaiID) ,
-      by = "kaiID") %>% 
-    dplyr::select(effortID, individualID, present) %>% 
-    pivot_wider(names_from = individualID, values_from = present, values_fill = 0) %>% 
-    dplyr::select(where(~ !anyNA(.)))
-  
-  #effort_list[[i]] <- spp_effort
-  detect_list[[i]] <- presense_matrix
-}
+band_data_list <- readRDS("C:\\Users\\Kumada\\Documents\\banding data\\band_data_list_10years_20250805.rds") #10年分データ
+
+#呼び出したい種のリスト番号の取り出し
+which(band_data_list$splist == "ｼｼﾞｭｳｶﾗ")
 
 
 # Plotting data -----------------------------------------------------------
