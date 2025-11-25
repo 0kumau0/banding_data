@@ -89,9 +89,63 @@ band_place <- band_data %>% left_join(place, by = "PCODE")
 
 # Make data for ADCR model ------------------------------------------------
 # make effort data --------------------------------------------------------
-
+effort <- data %>% 
+  mutate(YEAR = substr(DAY, 1, 4)) %>% 
+  filter(YEAR > 2008) %>% #if research period is limited
+  distinct(PCODE, DAY)
+effort <- effort %>% mutate(PCODE = as.character(.$PCODE))
+effort <- effort %>%  
+  group_by(PCODE) %>%
+  arrange(DAY, .by_group = TRUE) %>% 
+  mutate(effort_occ = row_number()) %>% #sequential No with in each location(PCODE)
+  ungroup() %>% 
+  mutate(effortID = row_number())  # sequential No. across the dataset
+effort$effort <- rep(1, nrow(effort))
 
 # make detection data -----------------------------------------------------
+splist <- count_individuals(band_data)
+#splist_full <- count_individuals(data)
+
+#各種ごとのデータセットを作成してリストに格納
+detect_list <- effort_list <- list()
+for (i in 1:length(splist)){ 
+  #種を選択
+  spp <- band_data %>% filter(SPNAMK == splist[i])
+  
+  #種ごとのeffort_occと、effotIDをふる
+  # #spp_effort <- spp %>% distinct(PCODE, DAY) %>% 
+  #   group_by(PCODE) %>%
+  #   arrange(DAY, .by_group = TRUE) %>% 
+  #   mutate(effort_occ = row_number()) %>% 
+  #   ungroup() %>% 
+  #   mutate(effortID = row_number())
+  
+  #PCODE-DAYをキーとして、sppにeffort_occとeffortIDを付与
+  # spp <- spp %>% mutate(keyID = paste0(PCODE,DAY))
+  # spp_effort <- spp_effort %>% mutate(keyID = paste0(PCODE,DAY))
+  # spp <- spp %>% left_join(spp_effort %>% dplyr::select(keyID, effort_occ, effortID), by = "keyID")
+  
+  #調査ID付与
+  spp <- spp %>% mutate(kaiID = paste0(PCODE,DAY))
+  
+  #effortのほうのeffortIDと結合 effortのほうのeffortIDをすべて保持
+  spp_1 <- spp %>% dplyr::select(PCODE, kaiID)
+  
+  #出現マトリクスの作成
+  presense_matrix <- spp %>% 
+    mutate(individualID = paste0(GUID,RING),
+           present = 1) %>% 
+    full_join(
+      effort %>% mutate(kaiID = paste0(PCODE,DAY)) %>% 
+        dplyr::select(effortID, kaiID) ,
+      by = "kaiID") %>% 
+    dplyr::select(effortID, individualID, present) %>% 
+    pivot_wider(names_from = individualID, values_from = present, values_fill = 0) %>% 
+    dplyr::select(where(~ !anyNA(.)))
+  
+  #effort_list[[i]] <- spp_effort
+  detect_list[[i]] <- presense_matrix
+}
 
 #Make lists
 
