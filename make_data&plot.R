@@ -15,6 +15,7 @@ data <- data %>% mutate(PCODE = if_else(PCODE == "910053", "110099", PCODE))
 splist <- read.dbf("../../Splist.DBF", as.is = T)
 place　<- read.dbf("../../PLACE.DBF", as.is = T)
 place <- place %>% mutate(PCODE = if_else(PCODE == "910053", "110099", PCODE))
+place <- place %>% filter(PCODE!=380036) #石鎚山のおかしなデータ除去　2025年12月4日　データ作成もう一度やりなおし
 migratory <- read.csv("../../migratory.csv") #made from Javian database
 
 
@@ -73,12 +74,12 @@ place$Lon <- sapply(place$LONG, convert_to_decimal)
 #   anti_join(dup_N_list, by = "indID") %>%
 #   anti_join(dup_dsp_list, by = "indID") %>%
 #   dplyr::select(-indID)
-
-# #save R.data
+# 
+# # #save R.data
 # R.data %>%
-#   write.csv("../band_data_20251125.csv", row.names = FALSE)
+#   write.csv("../band_data_20251204.csv", row.names = FALSE)
 
-band_data <- read_csv("../band_data_20251125.csv", 
+band_data <- read_csv("../band_data_20251204.csv", 
                       col_types = cols(PCODE = col_character(),
                                        RING = "character",
                                        GUID = "character",
@@ -161,9 +162,9 @@ band_data_list$splist <- splist %>%
 band_data_list$effort <- effort
 band_data_list$detect_list <- detect_list
 
-#saveRDS(band_data_list, "../band_data_list_30sp.rds")
+#saveRDS(band_data_list, "../band_data_list_30sp_20251205.rds")
 
-band_data_list <- readRDS("../band_data_list_30sp.rds") #10年分データ、30種のデータ
+band_data_list <- readRDS("../band_data_list_30sp_20251205.rds") #10年分データ、30種のデータ 変なデータ除去20251205
 
 #呼び出したい種のリスト番号の取り出し
 which(band_data_list$splist == "シジュウカラ")
@@ -180,7 +181,7 @@ sourcepath<-"../../ADCR/adcrtest2/secrad.r"
 source(sourcepath, encoding = "UTF-8")
 
 place <- place %>% dplyr::select(PCODE,Lat,Lon)
-effort <- effort %>% left_join(place %>% mutate(PCODE = as.character(PCODE)), by = "PCODE")
+effort <- band_data_list$effort %>% left_join(place %>% mutate(PCODE = as.character(PCODE)), by = "PCODE")
 
 #sf変換＆UTM変換
 effort_st <- st_as_sf(effort, coords = c("Lon", "Lat"), crs = 4326)
