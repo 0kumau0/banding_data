@@ -12,6 +12,7 @@ source("functions.R", encoding = "UTF-8")
 data <- read.dbf("../../6118LANDBIRD.DBF", as.is = T)
 #PCODE910053の地点は110099に書き換え
 data <- data %>% mutate(PCODE = if_else(PCODE == "910053", "110099", PCODE))
+data <- data %>% filter(PCODE!=380036) #石鎚山のおかしなデータ除去　2025年12月4日　データ作成もう一度やりなおし
 splist <- read.dbf("../../Splist.DBF", as.is = T)
 place　<- read.dbf("../../PLACE.DBF", as.is = T)
 place <- place %>% mutate(PCODE = if_else(PCODE == "910053", "110099", PCODE))
@@ -200,7 +201,7 @@ dataset<-list()
 #3次メッシュ ↓とどちらか
 #dataset$griddata <- st_read("C:\\Users\\Kumada\\banding data\\griddata\\mesh3_2.shp")
 #2次メッシュ
-dataset$griddata <- st_read("../../griddata/mesh2_convex3.gpkg")
+dataset$griddata <- st_read("../../griddata/mesh2_convex4.gpkg")
 
 #中心点
 dataset$griddata <- st_transform(dataset$griddata, crs = 3100)
@@ -213,6 +214,7 @@ dataset$griddata <- dataset$griddata %>%
 #dataset
 coords<-dataset$griddata[,c("x","y")]/1000	#km
 coords<-coords%>%as_tibble%>%dplyr::select(-geometry)
+coords<-coords%>%as_tibble%>%dplyr::select(-geometry)
 dataset$coords<-coords%>%as.matrix
 
 # 各グリッドセル間の距離を求める準備
@@ -222,9 +224,102 @@ ncell <- nrow(coords)  # グリッドセルの数
 xdist <- abs(outer(coords$x, rep(1, ncell)) - outer(rep(1, ncell), coords$x)) 
 ydist <- abs(outer(coords$y, rep(1, ncell)) - outer(rep(1, ncell), coords$y))
 
+xdist_deg <- abs(outer(coords$x, coords$x, "-"))
+ydist_deg <- abs(outer(coords$y, coords$y, "-"))
+
+# 浮動誤差を弾くトレランス（度）。ここは「1e-6 度」程度が実務では十分。
+tol <- 1e-6
+dx_deg <- min(xdist_deg[xdist_deg > tol])
+dy_deg <- min(ydist_deg[ydist_deg > tol])
+
+
+
 #最小の各方向距離（隣接セル間距離?）
 dx <- min(xdist[xdist != 0])
 dy <- min(ydist[ydist != 0])
+
+dx <- 11.2
+dy <- 9.3
+
+#計算方法修正
+
+library(dplyr)
+library(tibble)
+library(purrr)
+
+# ---- 1) 対象範囲を JGD2000（EPSG:4612, 経緯度）へ統一 ----
+# convex_poly / effort_st が別CRSなら、ここで変換
+convex_poly_gd <- st_transform(convex_poly, 4612)
+effort_st_gd   <- st_transform(effort_st,   4612)  # 必要なら
+
+# ---- 2) 2次メッシュのステップ（角度：度） ----
+step_lon <- 0.125        # 7分30秒 = 0.125度
+step_lat <- 5 / 60       # 5分 = 0.083333...度
+
+# ---- 3) bbox をメッシュ境界にスナップ（下限） ----
+bb <- st_bbox(convex_poly_gd)
+
+snap_down <- function(x, step) floor(x / step) * step
+
+offset_lon <- snap_down(bb[["xmin"]], step_lon)
+offset_lat <- snap_down(bb[["ymin"]], step_lat)
+
+# グリッドの必要枚数を算出（上限側が必ず覆われるように天井で）
+n_lon <- ceiling((bb[["xmax"]] - offset_lon) / step_lon)
+n_lat <- ceiling((bb[["ymax"]] - offset_lat) / step_lat)
+
+# ---- 4) グリッド生成（角度ベース、JGD2000） ----
+grid <- st_make_grid(
+  cellsize = c(step_lon, step_lat),
+  offset   = c(offset_lon, offset_lat),
+  n        = c(n_lon, n_lat),
+  what     = "polygons",
+  square   = TRUE
+)
+
+grid_sf <- st_as_sf(grid)
+st_crs(grid_sf) <- st_crs(convex_poly_gd)  # JGD2000 を明示
+
+# ---- 5) 対象範囲でクリップ（必要なら境界に合わせて切り出し） ----
+grid_clip <- st_intersection(grid_sf, convex_poly_gd)
+
+# ---- 6) セントロイド＆座標（度） ----
+cent <- st_centroid(grid_clip)
+xy   <- st_coordinates(cent)
+grid_clip <- grid_clip %>%
+  mutate(lon = xy[, "X"],  # 経度（度）
+         lat = xy[, "Y"])  # 緯度（度）
+
+# ---- 7) 隣接距離が定義どおりかチェック（度単位） ----
+coords_df <- grid_clip %>%
+  st_drop_geometry() %>%
+  dplyr::select(lon, lat)
+
+xdist_deg <- abs(outer(coords_df$lon, coords_df$lon, "-"))
+ydist_deg <- abs(outer(coords_df$lat, coords_df$lat, "-"))
+
+tol <- 1e-12
+dx_deg <- min(xdist_deg[xdist_deg > tol])    # 期待値：0.125
+dy_deg <- min(ydist_deg[ydist_deg > tol])    # 期待値：0.083333...
+
+print(dx_deg)
+print(dy_deg)
+
+# ---- 8) （任意）km への換算：代表緯度での近似 ----
+# 1度の緯度 ≈ 111.32 km、1度の経度 ≈ 111.32*cosφ km（φは緯度）
+phi_rad <- median(coords_df$lat) * pi / 180
+km_per_deg_lat <- 111.32
+km_per_deg_lon <- 111.32 * cos(phi_rad)
+
+dx_km <- dx_deg * km_per_deg_lon
+dy_km <- dy_deg * km_per_deg_lat
+
+print(dx_km)  # 東西の隣接距離（km; 緯度によって変化）
+print(dy_km)  # 南北の隣接距離（km; 約 9.27〜9.26 km 程度）
+
+
+
+
 
 # グリッドセル面積（km²）
 area <- rep(100, nrow(dataset$griddata)) #2次メッシュの時
