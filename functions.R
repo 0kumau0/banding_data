@@ -94,24 +94,6 @@ Num_capture_plot_all <- function(df,folder){
 }  
 
 
-# Make effort data --------------------------------------------------------
-make.effort <- function(data, year){
-  effort <- data %>% 
-    filter(YEAR > year) %>% #10年分データ
-    distinct(PCODE, DAY)
-  effort <- effort %>% mutate(PCODE = as.character(.$PCODE))
-  effort <- effort %>%  
-    group_by(PCODE) %>%
-    arrange(DAY, .by_group = TRUE) %>% 
-    mutate(effort_occ = row_number()) %>% 
-    ungroup() %>% 
-    mutate(effortID = row_number())
-  effort$effort <- rep(1, nrow(effort))
-  effort <- effort %>% mutate(PCODE = if_else(PCODE == "910053", "110099", PCODE))
-  return(effort)
-}
-
-
 # SortSpbyCapturedNumber --------------------------------------------------
 count_individuals <- function(df){
   # 個体ごとの捕獲回数（GUID + RING で個体を識別）
