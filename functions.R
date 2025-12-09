@@ -94,6 +94,56 @@ Num_capture_plot_all <- function(df,folder){
 }  
 
 
+# Make effort data --------------------------------------------------------
+make.effort <- function(df){
+  effort <- df %>% 
+    distinct(PCODE, DAY) %>% 
+    mutate(PCODE = as.character(.$PCODE))
+  effort <- effort %>%  
+    group_by(PCODE) %>%
+    arrange(DAY, .by_group = TRUE) %>% 
+    mutate(effort_occ = row_number()) %>% #sequential No with in each location(PCODE)
+    ungroup() %>% 
+    mutate(effortID = row_number())  # sequential No. across the dataset
+  effort$effort <- rep(1, nrow(effort))
+  effort
+}
+
+
+# Make detect data -----------------------------------------------------
+make.detect <- function(df, num = 30, effort){ #detect data を作る種数,　デフォルト出現上位30
+  detect_list <- list()
+  for (i in 1:num){
+    spp <- df %>% filter(SPNAMK == splist[i])
+    spp <- spp %>% mutate(kaiID = paste0(PCODE,DAY)) #調査ID付与
+    
+    #出現matrixの作成
+    spp.df <- spp %>% 
+      mutate(individualID = paste0(GUID,RING),
+             present = 1) %>%
+      full_join(
+        effort %>% mutate(kaiID = paste0(PCODE,DAY)) %>%
+          dplyr::select(effortID, kaiID) ,
+        by = "kaiID") %>%
+      dplyr::select(effortID, individualID, present)
+    spp.df$effortID <- factor(spp.df$effortID, exclude = NULL)
+    spp.df$individualID <- factor(spp.df$individualID, exclude = NULL)
+    spp.df <- spp.df %>%
+      mutate(present = ifelse(is.na(present), 0, present))
+    # 疎行列を作成 
+    mat <- sparseMatrix(
+      i = as.integer(spp.df$effortID),
+      j = as.integer(spp.df$individualID),
+      x = spp.df$present,
+      dims = c(length(levels(spp.df$effortID)), length(levels(spp.df$individualID))),
+      dimnames = list(levels(spp.df$effortID), levels(spp.df$individualID))
+    )
+    detect_list[[i]] <- mat
+  }
+  detect_list
+}
+
+
 # SortSpbyCapturedNumber --------------------------------------------------
 count_individuals <- function(df){
   # 個体ごとの捕獲回数（GUID + RING で個体を識別）

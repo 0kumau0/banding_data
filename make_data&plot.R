@@ -19,7 +19,7 @@ place <- place %>% filter(PCODE!=380036) #石鎚山のおかしなデータ除�
 migratory <- read.csv("../../migratory.csv") #made from Javian database
 
 
-# Make band_data -------------------------------------------------------------
+# Make band_data
 #convert the location coordinates in place data from degrees and minutes to decimal degrees
 place$Lat <- sapply(place$LAT, convert_to_decimal)
 place$Lon <- sapply(place$LONG, convert_to_decimal)
@@ -89,22 +89,11 @@ band_data <- read_csv("../band_data_20251204.csv",
 
 band_place <- band_data %>% left_join(place, by = "PCODE")
 
+band_place %>% filter(grepl("^高知県", ADDRESS)) #文字列でのデータの取り出し
 
 # Make data for ADCR model ------------------------------------------------
 # /make effort data --------------------------------------------------------
-effort <- data %>% 
-  mutate(YEAR = substr(DAY, 1, 4)) %>% 
-  filter(YEAR > 2008) %>% #if research period is limited
-  distinct(PCODE, DAY)
-effort <- effort %>% mutate(PCODE = as.character(.$PCODE))
-effort <- effort %>%  
-  group_by(PCODE) %>%
-  arrange(DAY, .by_group = TRUE) %>% 
-  mutate(effort_occ = row_number()) %>% #sequential No with in each location(PCODE)
-  ungroup() %>% 
-  mutate(effortID = row_number())  # sequential No. across the dataset
-effort$effort <- rep(1, nrow(effort))
-effort <- effort %>% mutate(PCODE = if_else(PCODE == "910053", "110099", PCODE))
+effort <- make.effort(band_data)
 
 # /make detection data -----------------------------------------------------
 splist <- count_individuals(band_data)
@@ -114,51 +103,14 @@ splist <- count_individuals(band_data)
 Sys.setlocale("LC_CTYPE", "ja_JP.UTF-8")
 library(stringi)
 library(Matrix)
-detect_list <- list()
-for (i in 1:30){ #length(splist)
-  #種を選択
-  spp <- band_data %>% filter(SPNAMK == splist[i])
-  
-  #調査ID付与
-  spp <- spp %>% mutate(kaiID = paste0(PCODE,DAY))
-  
-  #effortのほうのeffortIDと結合 effortのほうのeffortIDをすべて保持
-  spp_1 <- spp %>% dplyr::select(PCODE, kaiID)
-  
-  #出現マトリクスの作成
- 
-  df <- spp %>% 
-        mutate(individualID = paste0(GUID,RING),
-               present = 1) %>%
-        full_join(
-          effort %>% mutate(kaiID = paste0(PCODE,DAY)) %>%
-            dplyr::select(effortID, kaiID) ,
-          by = "kaiID") %>%
-        dplyr::select(effortID, individualID, present)
-  
-  # factor化してインデックス化
-  df$effortID <- factor(df$effortID, exclude = NULL)
-  df$individualID <- factor(df$individualID, exclude = NULL)
-  df <- df %>%
-    mutate(present = ifelse(is.na(present), 0, present))
-  
-  # 疎行列を作成 effortIDが消えるけど大丈夫？ここでeffortIDの列を増やす？
-  mat <- sparseMatrix(
-    i = as.integer(df$effortID),
-    j = as.integer(df$individualID),
-    x = df$present,
-    dims = c(length(levels(df$effortID)), length(levels(df$individualID))),
-    dimnames = list(levels(df$effortID), levels(df$individualID))
-  )
-  detect_list[[i]] <- mat
-}
+
+detect_list <- make.detect(band_data, num=30, effort)
 
 #Make lists
 band_data_list <- list()
 
 band_data_list$splist <- splist %>% 
   stri_trans_general("Halfwidth-Fullwidth")
-#band_data_list$effort_list <- effort_list
 band_data_list$effort <- effort
 band_data_list$detect_list <- detect_list
 
