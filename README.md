@@ -1,2 +1,5 @@
-#banding_data  
-codes for bird-banding data
+## banding_data  
+codes for bird-banding data 
+
+- make_data&plot.R
+ make data for ADCR model 
