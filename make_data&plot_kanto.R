@@ -19,6 +19,11 @@ place <- place %>% mutate(PCODE = if_else(PCODE == "910053", "110099", PCODE))
 place <- place %>% filter(PCODE!=380036) #石鎚山のおかしなデータ除去　2025年12月4日　データ作成もう一度やりなおし
 migratory <- read.csv("../../migratory.csv") #made from Javian database
 
+#地域をしぼる
+place <- place %>% filter(LAT  >= 35.0 & LAT  <= 37.8 & LONG >= 138.5 & LONG <= 141.5)
+kanto <- data %>% left_join(place, by ="PCODE")
+kanto <- kanto %>% filter(LAT  >= 35.0 & LAT  <= 37.8 & LONG >= 138.5 & LONG <= 141.5)
+data <- kanto
 
 # Make band_data -------------------------------------------------------------
 #convert the location coordinates in place data from degrees and minutes to decimal degrees
@@ -78,9 +83,9 @@ place$Lon <- sapply(place$LONG, convert_to_decimal)
 # 
 # # #save R.data
 # R.data %>%
-#   write.csv("../band_data_20251204.csv", row.names = FALSE)
+#   write.csv("../band_data_kanto.csv", row.names = FALSE)
 
-band_data <- read_csv("../band_data_20251204.csv", 
+band_data <- read_csv("../band_data_kanto.csv", 
                       col_types = cols(PCODE = col_character(),
                                        RING = "character",
                                        GUID = "character",
@@ -163,9 +168,9 @@ band_data_list$splist <- splist %>%
 band_data_list$effort <- effort
 band_data_list$detect_list <- detect_list
 
-#saveRDS(band_data_list, "../band_data_list_30sp_20251205.rds")
+#saveRDS(band_data_list, "../band_data_list_30sp_kanto.rds")
 
-band_data_list <- readRDS("../band_data_list_30sp_20251205.rds") #10年分データ、30種のデータ 変なデータ除去20251205
+band_data_list <- readRDS("../band_data_list_30sp_kanto.rds") #10年分データ、30種のデータ 変なデータ除去20251205
 
 #呼び出したい種のリスト番号の取り出し
 which(band_data_list$splist == "シジュウカラ")
@@ -182,6 +187,7 @@ sourcepath<-"../../ADCR/adcrtest2/secrad.r"
 source(sourcepath, encoding = "UTF-8")
 
 place <- place %>% dplyr::select(PCODE,Lat,Lon)
+  
 effort <- band_data_list$effort %>% left_join(place %>% mutate(PCODE = as.character(PCODE)), by = "PCODE")
 
 #sf変換＆UTM変換
@@ -202,6 +208,21 @@ dataset<-list()
 #dataset$griddata <- st_read("C:\\Users\\Kumada\\banding data\\griddata\\mesh3_2.shp")
 #2次メッシュ
 dataset$griddata <- st_read("../../griddata/mesh2_convex4.gpkg")
+
+
+# 対象範囲のバウンディングボックス（経度=LONGがxmin/xmax、緯度=LATがymin/ymax）
+bbox_kanto <- st_bbox(
+  c(xmin = 138.5, xmax = 141.5,
+    ymin = 34.9,  ymax = 38.1),
+  crs = st_crs(dataset$griddata)  # WGS84のまま
+)
+rect_kanto <- st_as_sfc(bbox_kanto)  # 矩形ポリゴン化
+
+# 矩形と交差するもののみ残す（TRUE/FALSEの論理ベクトルで抽出）
+idx <- st_intersects(dataset$griddata, rect_kanto, sparse = FALSE)[, 1]
+grid_kanto <- dataset$griddata[idx, ]
+
+dataset$griddata <- grid_kanto
 
 #中心点
 dataset$griddata <- st_transform(dataset$griddata, crs = 3100)
