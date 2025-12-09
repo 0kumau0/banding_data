@@ -2,5 +2,5 @@
 codes for bird-banding data 
 
 - make_data&plot.R  
- make data for ADCR model
+ make data for ADCR model  
  run ADCR model
