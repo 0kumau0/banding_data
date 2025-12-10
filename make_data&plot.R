@@ -199,9 +199,11 @@ sd_agri <- sd(grid_cov$agri)
 mu_wtr  <- mean(grid_cov$wtr)
 sd_wtr  <- sd(grid_cov$wtr)
 
-# agri列を標準化　
+# agri,wtr列を標準化　
 grid_cov_std <- grid_cov %>%
   mutate(agri = (agri - mu_agri) / sd_agri)
+grid_cov_std <- grid_cov_std %>%
+  mutate(wtr = (wtr - mu_wtr) / sd_wtr)
 
 # 標準化後の土地被覆情報を保存
 dataset$grid_cov_std <- grid_cov_std
