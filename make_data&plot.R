@@ -108,7 +108,6 @@ detect_list <- make.detect(band_data, num=30, effort)
 
 #Make lists
 band_data_list <- list()
-
 band_data_list$splist <- splist %>% 
   stri_trans_general("Halfwidth-Fullwidth")
 band_data_list$effort <- effort
@@ -152,7 +151,7 @@ dataset<-list()
 #3次メッシュ ↓とどちらか
 #dataset$griddata <- st_read("C:\\Users\\Kumada\\banding data\\griddata\\mesh3_2.shp")
 #2次メッシュ
-dataset$griddata <- st_read("../../griddata/mesh2_convex3.gpkg")
+dataset$griddata <- st_read("../../griddata/mesh2_convex4.gpkg")
 
 #中心点
 dataset$griddata <- st_transform(dataset$griddata, crs = 3100)
@@ -177,6 +176,9 @@ ydist <- abs(outer(coords$y, rep(1, ncell)) - outer(rep(1, ncell), coords$y))
 #最小の各方向距離（隣接セル間距離?）
 dx <- min(xdist[xdist != 0])
 dy <- min(ydist[ydist != 0])
+
+dx <- 11.2 
+dy <- 9.3
 
 # グリッドセル面積（km²）
 area <- rep(100, nrow(dataset$griddata)) #2次メッシュの時

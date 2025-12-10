@@ -1,5 +1,3 @@
-#codes of functions for banding data
-
 #convert the location coordinates in place data from degrees and minutes to decimal degrees--------------------
 # function to convert
 convert_to_decimal <- function(coord) {
@@ -130,14 +128,14 @@ make.detect <- function(df, num = 30, effort){ #detect data を作る種数,　�
     spp.df$individualID <- factor(spp.df$individualID, exclude = NULL)
     spp.df <- spp.df %>%
       mutate(present = ifelse(is.na(present), 0, present))
-    # 疎行列を作成 
-    mat <- sparseMatrix(
-      i = as.integer(spp.df$effortID),
-      j = as.integer(spp.df$individualID),
-      x = spp.df$present,
-      dims = c(length(levels(spp.df$effortID)), length(levels(spp.df$individualID))),
-      dimnames = list(levels(spp.df$effortID), levels(spp.df$individualID))
-    )
+     # 疎行列 
+     mat <- sparseMatrix(
+       i = as.integer(spp.df$effortID),
+       j = as.integer(spp.df$individualID),
+       x = spp.df$present,
+       dims = c(length(levels(spp.df$effortID)), length(levels(spp.df$individualID))),
+       dimnames = list(levels(spp.df$effortID), levels(spp.df$individualID))
+     )
     detect_list[[i]] <- mat
   }
   detect_list
