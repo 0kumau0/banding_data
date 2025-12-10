@@ -86,10 +86,23 @@ band_data <- read_csv("../band_data_20251204.csv",
                                        SPC = "character"),
                       locale = locale(encoding = "shift_jis")
 )
-
+colname <- names(band_data)
 band_place <- band_data %>% left_join(place, by = "PCODE")
+band_place <- band_place %>% st_as_sf(coords = c("Lon","Lat"), crs=4326)
+band_place <- band_place %>% st_transform(crs=3100)
 
-band_place %>% filter(grepl("^高知県", ADDRESS)) #文字列でのデータの取り出し
+#band_place %>% filter(grepl("^高知県", ADDRESS)) #文字列でのデータの取り出し
+
+#remove islands data using mesh polygon range
+poly <- st_read("../../griddata/QGIS/poly_20251210.shp") #3.ポリゴンの～.shpと同じ
+band_place <- 
+  st_join(band_place, poly, join = st_within, left = FALSE) 
+
+#ggplot () + geom_sf(data=poly) +geom_sf(data= band_data) #"../plots/pointplot_20251210.png"
+band_data <- band_place %>% 
+  st_drop_geometry() %>% 
+  dplyr::select(colname)
+
 
 # Make data for ADCR model ------------------------------------------------
 # /make effort data --------------------------------------------------------
@@ -151,7 +164,7 @@ dataset<-list()
 #3次メッシュ ↓とどちらか
 #dataset$griddata <- st_read("C:\\Users\\Kumada\\banding data\\griddata\\mesh3_2.shp")
 #2次メッシュ
-dataset$griddata <- st_read("../../griddata/mesh2_convex4.gpkg")
+dataset$griddata <- st_read("../../griddata/mesh2_convex6.gpkg")
 
 #中心点
 dataset$griddata <- st_transform(dataset$griddata, crs = 3100)
@@ -176,9 +189,6 @@ ydist <- abs(outer(coords$y, rep(1, ncell)) - outer(rep(1, ncell), coords$y))
 #最小の各方向距離（隣接セル間距離?）
 dx <- min(xdist[xdist != 0])
 dy <- min(ydist[ydist != 0])
-
-dx <- 11.2 
-dy <- 9.3
 
 # グリッドセル面積（km²）
 area <- rep(100, nrow(dataset$griddata)) #2次メッシュの時
