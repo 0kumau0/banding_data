@@ -95,14 +95,11 @@ Num_capture_plot_all <- function(df,folder){
 # Make effort data --------------------------------------------------------
 make.effort <- function(df){
   effort <- df %>% 
-    distinct(PCODE, DAY) %>% 
-    mutate(PCODE = as.character(.$PCODE))
-  effort <- effort %>%  
-    group_by(PCODE) %>%
-    arrange(DAY, .by_group = TRUE) %>% 
-    mutate(effort_occ = row_number()) %>% #sequential No with in each location(PCODE)
-    ungroup() %>% 
-    mutate(effortID = row_number())  # sequential No. across the dataset
+    distinct(PCODE, YEAR, DAY) %>% 
+    mutate(PCODE = as.character(.$PCODE)) %>% 
+    mutate (effort_occ = YEAR-2008) %>% 
+    mutate(effortID = row_number()) %>%  # sequential No. across the dataset
+    mutate(effort_occ2 =  dense_rank(DAY)) 
   effort$effort <- rep(1, nrow(effort))
   effort
 }

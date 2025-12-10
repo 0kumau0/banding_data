@@ -46,6 +46,7 @@ Total_sf <- st_as_sf(Total, coords = c("Lon", "Lat"), crs = 4326)
 
 
 convex_poly <- effort_st %>%
+  st_transform(crs = 4326) %>% 
   st_union() %>%
   st_convex_hull()             # 凸包（海側を含む外郭の簡易近似）
 
@@ -81,9 +82,9 @@ mesh_joined <- mesh10km_convex_gpkg %>%
     landuse2 %>% dplyr::select(id, cultivated, openwater),
     by = c("meshcode" = "id")
   ) %>%
-  mutate(
+  mutate(#データがない海部分
     cultivated = ifelse(is.na(cultivated), 0, cultivated),
-    openwater = ifelse(is.na(openwater), 100000000, openwater)
+    openwater = ifelse(is.na(openwater), 100000000, openwater) 
   ) %>%
   bind_cols(geometry = st_geometry(mesh10km_convex_gpkg)) %>%  # geometryを戻す
   st_as_sf()
