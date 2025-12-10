@@ -127,8 +127,7 @@ band_data_list$effort <- effort
 band_data_list$detect_list <- detect_list
 
 #saveRDS(band_data_list, "../band_data_list_30sp_20251205.rds")
-
-band_data_list <- readRDS("../band_data_list_30sp_20251205.rds") #10年分データ、30種のデータ 変なデータ除去20251205
+#band_data_list <- readRDS("../band_data_list_30sp_20251205.rds") #10年分データ、30種のデータ 変なデータ除去20251205
 
 #呼び出したい種のリスト番号の取り出し
 which(band_data_list$splist == "シジュウカラ")
