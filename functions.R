@@ -104,6 +104,18 @@ make.effort <- function(df){
   effort
 }
 
+make.effort2 <- function(df){
+  effort <- df %>% 
+    distinct(PCODE, YEAR, DAY, meshcode) %>% 
+    mutate(PCODE = as.character(.$PCODE), meshcode = as.character(.$meshcode)) %>% 
+    group_by(meshcode, YEAR) %>% 
+    mutate (effort = n()) %>% 
+    ungroup() %>% 
+    distinct(YEAR, meshcode, effort) %>% 
+    mutate(effortID = row_number()) 
+    effort
+}
+
 
 # Make detect data -----------------------------------------------------
 make.detect <- function(df, num = 30, effort){ #detect data を作る種数,　デフォルト出現上位30
@@ -133,6 +145,38 @@ make.detect <- function(df, num = 30, effort){ #detect data を作る種数,　�
        dims = c(length(levels(spp.df$effortID)), length(levels(spp.df$individualID))),
        dimnames = list(levels(spp.df$effortID), levels(spp.df$individualID))
      )
+    detect_list[[i]] <- mat
+  }
+  detect_list
+}
+
+make.detect2 <- function(df, num = 30, effort){ #detect data を作る種数,　デフォルト出現上位30
+  detect_list <- list()
+  for (i in 1:num){
+    spp <- df %>% filter(SPNAMK == splist[i])
+    spp <- spp %>% mutate(kaiID = paste0(meshcode,YEAR)) #調査ID付与
+    
+    #出現matrixの作成
+    spp.df <- spp %>% 
+      mutate(individualID = paste0(GUID,RING),
+             present = 1) %>%
+      full_join(
+        effort %>% mutate(kaiID = paste0(meshcode,YEAR)) %>%
+          dplyr::select(effortID, kaiID) ,
+        by = "kaiID") %>%
+      dplyr::select(effortID, individualID, present)
+    spp.df$effortID <- factor(spp.df$effortID, exclude = NULL)
+    spp.df$individualID <- factor(spp.df$individualID, exclude = NULL)
+    spp.df <- spp.df %>%
+      mutate(present = ifelse(is.na(present), 0, present))
+    # 疎行列 
+    mat <- sparseMatrix(
+      i = as.integer(spp.df$effortID),
+      j = as.integer(spp.df$individualID),
+      x = spp.df$present,
+      dims = c(length(levels(spp.df$effortID)), length(levels(spp.df$individualID))),
+      dimnames = list(levels(spp.df$effortID), levels(spp.df$individualID))
+    )
     detect_list[[i]] <- mat
   }
   detect_list

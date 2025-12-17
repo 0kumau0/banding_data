@@ -4,6 +4,7 @@ library(tidyverse)
 library(sf)
 library(dplyr)
 library(purrr)
+library(jpmesh)
 Sys.setlocale("LC_ALL", "Japanese_Japan.932")
 source("functions.R", encoding = "UTF-8")
 
@@ -88,25 +89,28 @@ band_data <- read_csv("../band_data_20251204.csv",
 )
 colname <- names(band_data)
 band_place <- band_data %>% left_join(place, by = "PCODE")
+#band_place$mesh <- coords_to_mesh(band_place$Lon, band_place$Lat, mesh_size = 2) #めちゃくちゃ時間かかる。やらない
 band_place <- band_place %>% st_as_sf(coords = c("Lon","Lat"), crs=4326)
 band_place <- band_place %>% st_transform(crs=3100)
 
 #band_place %>% filter(grepl("^高知県", ADDRESS)) #文字列でのデータの取り出し
 
 #remove islands data using mesh polygon range
+mesh <- st_read("../../griddata/mesh2_convex6.gpkg")
 poly <- st_read("../../griddata/QGIS/poly_20251210.shp") #3.ポリゴンの～.shpと同じ
 band_place <- 
-  st_join(band_place, poly, join = st_within, left = FALSE) 
+  st_join(band_place, mesh, join = st_within, left = FALSE) 
 
 #ggplot () + geom_sf(data=poly) +geom_sf(data= band_data) #"../plots/pointplot_20251210.png"
 band_data <- band_place %>% 
   st_drop_geometry() %>% 
-  dplyr::select(colname)
+  dplyr::select(colname, meshcode)
 
 
 # Make data for ADCR model ------------------------------------------------
+
 # /make effort data --------------------------------------------------------
-effort <- make.effort(band_data)
+effort <- make.effort2(band_data)
 
 # /make detection data -----------------------------------------------------
 splist <- count_individuals(band_data)
@@ -117,7 +121,7 @@ Sys.setlocale("LC_CTYPE", "ja_JP.UTF-8")
 library(stringi)
 library(Matrix)
 
-detect_list <- make.detect(band_data, num=30, effort)
+detect_list <- make.detect2(band_data, num=30, effort)
 
 #Make lists
 band_data_list <- list()
@@ -127,8 +131,10 @@ band_data_list$effort <- effort
 band_data_list$detect_list <- detect_list
 
 #saveRDS(band_data_list, "../band_data_list_30sp_20251205.rds")
+#saveRDS(band_data_list, "../band_data_list_30sp_20251217.rds") #各メッシュ、年毎にデータを集計
 
-band_data_list <- readRDS("../band_data_list_30sp_20251205.rds") #10年分データ、30種のデータ 変なデータ除去20251205
+#band_data_list <- readRDS("../band_data_list_30sp_20251205.rds") #10年分データ、30種のデータ 変なデータ除去20251205
+band_data_list <- readRDS("../band_data_list_30sp_20251217.rds") 
 
 #呼び出したい種のリスト番号の取り出し
 which(band_data_list$splist == "シジュウカラ")
