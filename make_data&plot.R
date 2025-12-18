@@ -96,7 +96,8 @@ band_place <- band_place %>% st_transform(crs=3100)
 #band_place %>% filter(grepl("^高知県", ADDRESS)) #文字列でのデータの取り出し
 
 #remove islands data using mesh polygon range
-mesh <- st_read("../../griddata/mesh2_convex6.gpkg")
+mesh <- st_read("../../griddata/mesh2_convex6.gpkg") %>% 
+  mutate(meshcode2 = row_number())
 poly <- st_read("../../griddata/QGIS/poly_20251210.shp") #3.ポリゴンの～.shpと同じ
 band_place <- 
   st_join(band_place, mesh, join = st_within, left = FALSE) 
@@ -104,7 +105,8 @@ band_place <-
 #ggplot () + geom_sf(data=poly) +geom_sf(data= band_data) #"../plots/pointplot_20251210.png"
 band_data <- band_place %>% 
   st_drop_geometry() %>% 
-  dplyr::select(colname, meshcode)
+  dplyr::select(colname, meshcode2) %>% 
+  rename(meshcode = meshcode2)
 
 
 # Make data for ADCR model ------------------------------------------------
@@ -131,14 +133,14 @@ band_data_list$effort <- effort
 band_data_list$detect_list <- detect_list
 
 #saveRDS(band_data_list, "../band_data_list_30sp_20251205.rds")
-<<<<<<< HEAD
 #band_data_list <- readRDS("../band_data_list_30sp_20251205.rds") #10年分データ、30種のデータ 変なデータ除去20251205
-=======
+
 #saveRDS(band_data_list, "../band_data_list_30sp_20251217.rds") #各メッシュ、年毎にデータを集計
+#saveRDS(band_data_list, "../band_data_list_30sp_20251218.rds")
 
 #band_data_list <- readRDS("../band_data_list_30sp_20251205.rds") #10年分データ、30種のデータ 変なデータ除去20251205
-band_data_list <- readRDS("../band_data_list_30sp_20251217.rds") 
->>>>>>> 79e121fc9ace608406b58ba8d875019f271b5b2c
+band_data_list <- readRDS("../band_data_list_30sp_20251218.rds") 
+
 
 #呼び出したい種のリスト番号の取り出し
 which(band_data_list$splist == "シジュウカラ")
@@ -174,7 +176,10 @@ dataset<-list()
 #3次メッシュ ↓とどちらか
 #dataset$griddata <- st_read("C:\\Users\\Kumada\\banding data\\griddata\\mesh3_2.shp")
 #2次メッシュ
-dataset$griddata <- st_read("../../griddata/mesh2_convex6.gpkg")
+dataset$griddata <- st_read("../../griddata/mesh2_convex6.gpkg") %>% 
+  mutate(meshcode2 = row_number()) %>% 
+  rename(oldmeshcode = meshcode) %>% 
+  rename(meshcode = meshcode2) 
 
 #中心点
 dataset$griddata <- st_transform(dataset$griddata, crs = 3100)
@@ -242,15 +247,19 @@ dataset$effort <- effort$effort #bandデータのeffortは1調査あたりすべ
 #dataset$griddataのどのグリッドに各effortの点が含まれるかをgriddataの行番号として取得
 #格子ライン上に乗った点について、両方のセル情報が加わってしまうので、最初の一つだけ採択
 #effort_loc_list <- st_intersects(effort_st, dataset$griddata)
+# gtable <- dataset$griddata %>% 
+#   group_by(meshcode) %>%
+#   slice_head(n = 1) %>% 
+#   ungroup() %>% 
+#   mutate(rownumber = row_number(.))
 gtable <- dataset$griddata %>% 
-  group_by(meshcode) %>%
-  slice_head(n = 1) %>% 
-  ungroup() %>% 
-  mutate(rownumber = row_number(.))
+  mutate(rownumber = row_number()) %>% 
+  mutate(meshcode = as.character(meshcode))
   
-effort_loc <- left_join(effort, gtable) %>% 
+effort_loc <- left_join(effort, gtable, by = "meshcode") %>% 
   dplyr::select(rownumber) %>% 
-  as.vector()
+  unlist() %>% unname() 
+dataset$effort_loc<-effort_loc
 
 # # 1地点に複数グリッドが対応している場合は、最初の1つだけを使う
 # effort_loc <- sapply(effort_loc_list, function(x) if(length(x) > 0) x[1] else NA)
