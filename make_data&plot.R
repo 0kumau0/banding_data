@@ -4,6 +4,7 @@ library(tidyverse)
 library(sf)
 library(dplyr)
 library(purrr)
+library(jpmesh)
 Sys.setlocale("LC_ALL", "Japanese_Japan.932")
 source("functions.R", encoding = "UTF-8")
 
@@ -88,25 +89,28 @@ band_data <- read_csv("../band_data_20251204.csv",
 )
 colname <- names(band_data)
 band_place <- band_data %>% left_join(place, by = "PCODE")
+#band_place$mesh <- coords_to_mesh(band_place$Lon, band_place$Lat, mesh_size = 2) #めちゃくちゃ時間かかる。やらない
 band_place <- band_place %>% st_as_sf(coords = c("Lon","Lat"), crs=4326)
 band_place <- band_place %>% st_transform(crs=3100)
 
 #band_place %>% filter(grepl("^高知県", ADDRESS)) #文字列でのデータの取り出し
 
 #remove islands data using mesh polygon range
+mesh <- st_read("../../griddata/mesh2_convex6.gpkg")
 poly <- st_read("../../griddata/QGIS/poly_20251210.shp") #3.ポリゴンの～.shpと同じ
 band_place <- 
-  st_join(band_place, poly, join = st_within, left = FALSE) 
+  st_join(band_place, mesh, join = st_within, left = FALSE) 
 
 #ggplot () + geom_sf(data=poly) +geom_sf(data= band_data) #"../plots/pointplot_20251210.png"
 band_data <- band_place %>% 
   st_drop_geometry() %>% 
-  dplyr::select(colname)
+  dplyr::select(colname, meshcode)
 
 
 # Make data for ADCR model ------------------------------------------------
+
 # /make effort data --------------------------------------------------------
-effort <- make.effort(band_data)
+effort <- make.effort2(band_data)
 
 # /make detection data -----------------------------------------------------
 splist <- count_individuals(band_data)
@@ -117,7 +121,7 @@ Sys.setlocale("LC_CTYPE", "ja_JP.UTF-8")
 library(stringi)
 library(Matrix)
 
-detect_list <- make.detect(band_data, num=30, effort)
+detect_list <- make.detect2(band_data, num=30, effort)
 
 #Make lists
 band_data_list <- list()
@@ -127,7 +131,14 @@ band_data_list$effort <- effort
 band_data_list$detect_list <- detect_list
 
 #saveRDS(band_data_list, "../band_data_list_30sp_20251205.rds")
+<<<<<<< HEAD
 #band_data_list <- readRDS("../band_data_list_30sp_20251205.rds") #10年分データ、30種のデータ 変なデータ除去20251205
+=======
+#saveRDS(band_data_list, "../band_data_list_30sp_20251217.rds") #各メッシュ、年毎にデータを集計
+
+#band_data_list <- readRDS("../band_data_list_30sp_20251205.rds") #10年分データ、30種のデータ 変なデータ除去20251205
+band_data_list <- readRDS("../band_data_list_30sp_20251217.rds") 
+>>>>>>> 79e121fc9ace608406b58ba8d875019f271b5b2c
 
 #呼び出したい種のリスト番号の取り出し
 which(band_data_list$splist == "シジュウカラ")
@@ -143,19 +154,19 @@ library(secr)
 sourcepath<-"../../ADCR/adcrtest2/secrad.r"
 source(sourcepath, encoding = "UTF-8")
 
-place <- place %>% dplyr::select(PCODE,Lat,Lon)
-effort <- band_data_list$effort %>% left_join(place %>% mutate(PCODE = as.character(PCODE)), by = "PCODE")
+# place <- place %>% dplyr::select(PCODE,Lat,Lon)
+# effort <- band_data_list$effort %>% left_join(place %>% mutate(PCODE = as.character(PCODE)), by = "PCODE")
+# 
+# #sf変換＆UTM変換
+# effort_st <- st_as_sf(effort, coords = c("Lon", "Lat"), crs = 4326)
+# effort_utm <- st_transform(effort_st, crs = 3100)
 
-#sf変換＆UTM変換
-effort_st <- st_as_sf(effort, coords = c("Lon", "Lat"), crs = 4326)
-effort_utm <- st_transform(effort_st, crs = 3100)
 
-
-# 座標を抽出して元のデータに追加
-coords <- st_coordinates(effort_utm)
-effort$x <- coords[, "X"]
-effort$y <- coords[, "Y"]
-effort_st<-effort%>%st_as_sf(coords=c("x","y"),crs=3100)
+# # 座標を抽出して元のデータに追加
+# coords <- st_coordinates(effort_utm)
+# effort$x <- coords[, "X"]
+# effort$y <- coords[, "Y"]
+# effort_st<-effort%>%st_as_sf(coords=c("x","y"),crs=3100)
 
 #read griddata
 ngrid<-1
@@ -230,11 +241,20 @@ dataset$effort <- effort$effort #bandデータのeffortは1調査あたりすべ
 
 #dataset$griddataのどのグリッドに各effortの点が含まれるかをgriddataの行番号として取得
 #格子ライン上に乗った点について、両方のセル情報が加わってしまうので、最初の一つだけ採択
-effort_loc_list <- st_intersects(effort_st, dataset$griddata)
+#effort_loc_list <- st_intersects(effort_st, dataset$griddata)
+gtable <- dataset$griddata %>% 
+  group_by(meshcode) %>%
+  slice_head(n = 1) %>% 
+  ungroup() %>% 
+  mutate(rownumber = row_number(.))
+  
+effort_loc <- left_join(effort, gtable) %>% 
+  dplyr::select(rownumber) %>% 
+  as.vector()
 
-# 1地点に複数グリッドが対応している場合は、最初の1つだけを使う
-effort_loc <- sapply(effort_loc_list, function(x) if(length(x) > 0) x[1] else NA)
-dataset$effort_loc<-effort_loc
+# # 1地点に複数グリッドが対応している場合は、最初の1つだけを使う
+# effort_loc <- sapply(effort_loc_list, function(x) if(length(x) > 0) x[1] else NA)
+# dataset$effort_loc<-effort_loc
 
 #データに追加
 detect <- band_data_list$detect_list[[which(band_data_list$splist == "シジュウカラ")]]
