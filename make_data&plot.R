@@ -96,7 +96,7 @@ band_place <- band_place %>% st_transform(crs=3100)
 #band_place %>% filter(grepl("^高知県", ADDRESS)) #文字列でのデータの取り出し
 
 #remove islands data using mesh polygon range
-mesh <- st_read("../../griddata/mesh2_convex6.gpkg") %>% 
+mesh <- st_read("../../griddata/mesh2_convex7.gpkg") %>% 
   mutate(meshcode2 = row_number())
 poly <- st_read("../../griddata/QGIS/poly_20251210.shp") #3.ポリゴンの～.shpと同じ
 band_place <- 
@@ -176,9 +176,9 @@ dataset<-list()
 #3次メッシュ ↓とどちらか
 #dataset$griddata <- st_read("C:\\Users\\Kumada\\banding data\\griddata\\mesh3_2.shp")
 #2次メッシュ
-dataset$griddata <- st_read("../../griddata/mesh2_convex6.gpkg") %>% 
+dataset$griddata <- st_read("../../griddata/mesh2_convex7.gpkg") %>% 
   mutate(meshcode2 = row_number()) %>% 
-  rename(oldmeshcode = meshcode) %>% 
+  rename(oldmeshcode2 = meshcode) %>% 
   rename(meshcode = meshcode2) 
 
 #中心点
