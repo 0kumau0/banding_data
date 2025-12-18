@@ -113,8 +113,9 @@ make.effort2 <- function(df){
     mutate (effort = n()) %>% 
     ungroup() %>% 
     distinct(YEAR, meshcode, effort) %>% 
-    mutate(effortID = row_number()) 
-    effort
+    mutate(effortID = row_number()) %>% 
+    mutate (effort_occ = YEAR-2008) 
+  effort
 }
 
 
