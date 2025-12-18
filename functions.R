@@ -108,6 +108,7 @@ make.effort2 <- function(df){
   effort <- df %>% 
     distinct(PCODE, YEAR, DAY, meshcode) %>% 
     mutate(PCODE = as.character(.$PCODE), meshcode = as.character(.$meshcode)) %>% 
+    mutate (effort_occ = YEAR-2008) %>% 
     group_by(meshcode, YEAR) %>% 
     mutate (effort = n()) %>% 
     ungroup() %>% 
