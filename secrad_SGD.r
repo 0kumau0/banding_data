@@ -852,376 +852,447 @@ advdiff.eigen.t<-function(t,initloc,mucoords,gridcoords,logc,loga,neighmat,resol
 
 ##Class 'secrad'
 secrad<-
-R6Class("secrad",
-	public=list(
-		secrdata=NA,
-		envmodel=list(D~1,C~1,A~0),
-		indmodel=c(A=FALSE,g0=FALSE),
-		occmodel=c(A=FALSE,g0=FALSE),
-		adtemp=list(adpar=NA,adout=NA),
-		chtemp=list(chpar=NA,chout=NA),
-		lastpar=NULL,
-		initialize=function(secrdata){
-			self$secrdata<-secrdata
-		},
-		set_model=function(envmodel,indmodel,occmodel){
-			self$envmodel<-envmodel
-			self$indmodel<-indmodel
-			self$occmodel<-occmodel
-		},
-		del_temp=function(){
-			self$adtemp=list(adpar=NA,adout=NA)
-			self$chtemp=list(chpar=NA,chout=NA)
-		},
-		loglf=function(par,loglfscale=1,verbose=F){
-			secrdata<-self$secrdata
-			envmodel<-self$envmodel
-			indmodel<-self$indmodel
-			occmodel<-self$occmodel
-			self$lastpar<-par
-			####prepare data for estimation
-			ncell<-secrdata$ncell
-			nocc<-secrdata$nocc
-			nind<-secrdata$nind
-			
-			#design matrices of grid
-			gridcov<-secrdata$grid_cov
-			if(!is.null(gridcov)){
-				if(any(is.na(gridcov))){
-					stop("NA must not be included in covariates.\n")
-				}
-			}
-			modellist<-lapply(envmodel,"[",-2)
-			for(i in 1:length(modellist)){
-				names(modellist)[i]<-as.character(envmodel[[i]][2])
-			}
-			denv.mat<-model.matrix(modellist$D,data=gridcov)
-			denv.offset<-model.offset(model.frame(modellist$D,data=gridcov))
-			if(is.null(denv.offset)){
-				denv.offset<-rep(0,ncell)
-			}
-			
-			cenv.mat<-model.matrix(modellist$C,data=gridcov)
-			cenv.offset<-model.offset(model.frame(modellist$C,data=gridcov))
-			if(is.null(cenv.offset)){
-				cenv.offset<-rep(0,ncell)
-			}
-			
-			woaenv<-F
-			aenv.mat<-model.matrix(modellist$A,data=gridcov)
-			if(length(aenv.mat)==0){
-				aenv.mat<-matrix(0,nrow=ncell,ncol=1)
-				woaenv<-T
-			}else if(is.element("(Intercept)",colnames(aenv.mat))){
-				stop("Intercept cannot be included in the advection submodel.")
-			}
-			aenv.offset<-model.offset(model.frame(modellist$A,data=gridcov))
-			if(is.null(aenv.offset)){
-				aenv.offset<-rep(0,ncell)
-			}
-			
-			#individual covariate
-			if(any(indmodel)){
-				indcov<-secrdata$ind_cov
-			}else{
-				indcov<-rep(0,nind)
-			}
-			
-			#occasion covariate
-			if(any(occmodel)){
-				occcov<-secrdata$occ_cov
-			}else{
-				occcov<-rep(0,nocc)
-			}
-				
-			###partitioning parameters
-			#density
-			ndpar<-ncol(denv.mat)
-			dpar<-par[1:ndpar]
-			#connectivity
-			ncpar<-ncol(cenv.mat)
-			cpar<-par[(1:ncpar)+ndpar]
-			#advection
-			napar<-ifelse(woaenv,0,ncol(aenv.mat))
-			if(napar!=0){
-				apar<-apar2<-par[(1:napar)+ndpar+ncpar]
-			}else{
-				apar<-numeric(0)
-				apar2<-0
-			}
-			#g0
-			nobs<-length(secrdata$obs)
-			obstype<-unlist(lapply(secrdata$obs,"[[","type"))
-			npar_type<-c(1,1);names(npar_type)<-c("binom","poisson")
-			ng0par_obs<-npar_type[obstype]
-			g0par<-vector("list",nobs)
-			ng0par<-0
-			for(i in 1:nobs){
-				g0par[[i]]<-par[(1:ng0par_obs[i])+ng0par+ndpar+ncpar+napar]
-				ng0par<-ng0par+ng0par_obs[i]
-			}
-			#occasion
-			noccgrp<-length(unique(occcov))
-			noccpar<-sum(occmodel)*(noccgrp-1)
-			if(noccpar!=0){
-				occpar<-par[(1:noccpar)+ndpar+ncpar+napar+ng0par]
-				names(occpar)<-paste0(rep(names(occmodel)[occmodel],each=noccgrp-1),"_",rep(levels(factor(occcov))[-1],sum(occmodel)))
-			}else{
-				occpar<-numeric(0)
-			}
-			
-			nindgrp<-length(unique(indcov))	
-			nindpar<-sum(indmodel)*(nindgrp-1)
-			nmixpar<-nindgrp-1
-			if(nindpar!=0){
-				indpar<-par[(1:nindpar)+ndpar+ncpar+napar+ng0par+noccpar]
-				names(indpar)<-paste0(rep(names(indmodel)[indmodel],each=nindgrp-1),"_",rep(levels(factor(indcov))[-1],sum(indmodel)))
-				mixpar<-par[(1:nmixpar)+nindpar+ndpar+ncpar+napar+ng0par+noccpar]
-			}else{
-				indpar<-numeric(0)
-				mixpar<-numeric(0)
-			}
-		
-			if(!is.null(secrdata$auxiliary)){
-				aux<-secrdata$auxiliary
-			}else{
-				aux<-NULL
-			}
-			#survival matrix(not implemented)
-			srv<-matrix(1,nrow=secrdata$nind,ncol=nocc)
-		#	if(!is.null(aux)){
-		#		auxtype<-unlist(lapply(secrdata$auxiliary,"[","type"))
-		#		if(is.element("removal",auxtype)){
-		#			numremoval<-which(auxtype=="removal")
-		#			for(i in 1:length(numremoval)){
-		#				whichremove<-which(secrdata$auxiliary[[numremoval[i]]]$detect==1,arr.ind=T)
-		#				doublet<-cbind(ind=whichremove[,2],occ=secrdata$auxiliary[[numremoval[i]]]$effort_occ[whichremove[,1]])
-		#				for(j in 1:nrow(doublet)){
-		#					if(doublet[j,2]<nocc){
-		#						srv[doublet[j,1],(doublet[j,2]+1):nocc]<-0
-		#					}
-		#				}
-		#			}
-		#		}
-		#	}
-			
-			#
-			if(verbose){
-				cat("[parameters]\n","density ",dpar,"\n","connectivity ", cpar,
-					"\n","advection ",apar,"\n","detectability ",unlist(g0par),
-					"\n","occasion ",occpar,
-					"\n","individual ",indpar,"\n","mixing parameter ",mixpar,"\n")
-			}
-			#log mean density
-			lnD<-c(denv.mat%*%dpar+denv.offset)
-			
-			#individual covariate of advection
-			grepA<-grep("^A",names(indpar))
-		
-			if(length(grepA)!=0){
-				apar_ind<-c(0,indpar[grepA])
-			}else{
-				apar_ind<-0
-			}
-			
-			#individual covariate of detection
-			grepg0<-grep("^g0",names(indpar))
-			if(length(grepg0)!=0){
-				g0par_ind<-c(0,indpar[grepg0])
-			}else{
-				g0par_ind<-0
-			}
-			ng0par_ind<-length(g0par_ind)
-		
-			#occasion covariate of advection
-			grepAocc<-grep("^A",names(occpar))
-		
-			if(length(grepAocc)!=0){
-				apar_occ<-c(0,occpar[grepAocc])
-			}else{
-				apar_occ<-0
-			}
-			
-			#occasion covariate of detection
-			grepg0occ<-grep("^g0",names(occpar))
-			if(length(grepg0occ)!=0){
-				g0par_occ<-c(0,occpar[grepg0occ])
-			}else{
-				g0par_occ<-0
-			}
-			ng0par_occ<-length(g0par_occ)
-		
-			
-			#list of g0 coef
-			g0list<-vector("list",ng0par)
-			for(i in 1:nobs){
-				g0list[[i]]<-outer(matrix(1,ng0par_ind,ng0par_occ),g0par[[i]])
-				g0list[[i]][,,1]<-g0list[[i]][,,1]+outer(g0par_ind,rep(1,ng0par_occ))+outer(rep(1,ng0par_ind),g0par_occ)
-			}
-		
-			#advection-diffusion model
-			if(any(is.na(self$adtemp$adpar))){
-				self$adtemp$adpar<-array(NA,dim=c(ncpar+napar+2,length(apar_ind),length(apar_occ)))
-				self$adtemp$adout<-array(NA,dim=c(ncell,ncell,length(apar_ind),length(apar_occ)))
-			}
-			logp_arr<-array(NA,dim=c(ncell,ncell,length(apar_ind),length(apar_occ)))
-			for(i in 1:length(apar_ind)){
-				for(j in 1:length(apar_occ)){
-					flag<-TRUE
-					adpar<-c(cpar,apar,apar_ind[i],apar_occ[j])
-					if(all(!is.na(self$adtemp$adpar[,i,j]))){
-						adpar_pre<-self$adtemp$adpar[,i,j]
-						if(all(adpar==adpar_pre)){
-							flag<-FALSE
-						}
-					}
-					if(flag){
-						logc<-c(cenv.mat%*%matrix(cpar))+cenv.offset
-						loga<-c(aenv.mat%*%matrix(apar2))+aenv.offset+apar_ind[i]+apar_occ[j]
-						logp_arr[,,i,j]<-advdiff.eigen(mucoords=secrdata$coords,
-										gridcoords=secrdata$coords,
-										logc=logc,
-										loga=loga,
-										neighmat=secrdata$neighmat,
-										resolution=secrdata$resolution,
-										logprob=T)
-						self$adtemp$adpar[,i,j]<-adpar
-						self$adtemp$adout[,,i,j]<-logp_arr[,,i,j]
-					}else{
-						logp_arr[,,i,j]<-self$adtemp$adout[,,i,j]
-					}
-				}
-			}
-				
-			#mean number of detection (or cloglog of prob for binimial)
-			loglambdalist<-vector("list",nobs)
-			nindgrp_lambda<-pmax(length(apar_ind),length(g0par_ind))
-			for(i in 1:nobs){
-				loglambdalist[[i]]<-array(NA,dim=c(ncell,length(secrdata$obs[[i]]$effort),nindgrp_lambda))
-				A_effort_occtype<- ifelse(rep(occmodel["A"],length(secrdata$obs[[i]]$effort_occ)),
-								occcov[secrdata$obs[[i]]$effort_occ]+1,
-								rep(1,length(secrdata$obs[[i]]$effort_occ)))
-				g0_effort_occtype<-ifelse(rep(occmodel["g0"],length(secrdata$obs[[i]]$effort_occ)),
-								occcov[secrdata$obs[[i]]$effort_occ]+1,
-								rep(1,length(secrdata$obs[[i]]$effort_occ)))
-				for(j in 1:nindgrp_lambda){
-					if(indmodel["A"]){
-						logp<-logp_arr[,,j,,drop=F]
-					}else{
-						logp<-logp_arr[,,1,,drop=F]
-					}
-					g0list_indocc<-g0list[[i]][j,g0_effort_occtype,,drop=F]
-					loglambdalist[[i]][,,j]<-loglambda.ad(type=obstype[i],g0list_indocc,secrdata$obs[[i]]$effort,secrdata$obs[[i]]$effort_loc,A_effort_occtype,logp,logprob=T)
-				}
-			}
-			
-			####calculation of pdot
-			#log probability of non-detection of each individual group and occasion group
-			logpzerolist<-vector("list",nobs)
-			for(i in 1:nobs){
-				logpzerolist[[i]]<-array(NA,dim=c(ncell,length(secrdata$obs[[i]]$effort),nindgrp))
-				for(j in 1:nindgrp){
-						logpzerolist[[i]][,,j]<-logpzero.ad(type=obstype[i],loglambdalist[[i]][,,j],secrdata$obs[[i]]$effort)
-				}
-			}
-			
-			#log 1-pdot for each occasion conditional on X
-			logpzero_occ_x_arr<-array(NA,dim=c(ncell,nocc,nindgrp))
-			for(i in 1:nocc){
-				logpzerolist_occ<-vector("list",nobs)
-				for(j in 1:nobs){
-					cond<-secrdata$obs[[j]]$effort_occ==i
-					logpzerolist_occ[[j]]<-logpzerolist[[j]][,cond,,drop=F]
-				}
-				
-				for(k in 1:nindgrp){
-					logpzerolist_occ_grp<-lapply(logpzerolist_occ,"[",,,k)
-					logpzero_occ_x_arr[,i,k]<-logpzero.x(logpzerolist_occ_grp)
-				}
-			}
-			
-		
-			#ln(pdot) for each individual
-			logpzero_occ_x_ind<-logpzero_occ_x_arr[,,indcov-min(indcov)+1,drop=F]
-			logpzero_x_ind<-(logpzero_occ_x_ind*outer(rep(1,ncell),t(srv)))%>%
-						aperm(perm=c(1,3,2))%>%
-						rowSums(dim=2)
-			logpdot_x_ind<-log1m_exp_mat(logpzero_x_ind)			
-		
-			#lnD+ln(area)+ln(pdot) for each individual
-			logd_area_pdot_x_ind<-outer(lnD+log(secrdata$area),rep(1,nind))+logpdot_x_ind
-			
-			#logsumexp(lnD+ln(area)+ln(pdot)) for each individual
-			logd_area_pdot_ind<-colsum_lp(logd_area_pdot_x_ind)
-			
-			#####likelihood of individual capture history conditional on detection at least once
-			#multinomial coefficient
-			detectlist<-lapply(secrdata$obs,"[[","detect")
-			detect_append<-detectlist[[1]]
-			if(nobs>1){
-				for(i in 2:nobs){
-					detect_append<-rbind(detect_append,detectlist[[i]])
-				}
-			}
-			detect_pattern<-apply(detect_append,2,paste,collapse="_")
-			nc<-table(detect_pattern)
-			names(nc)<-NULL
-			logmulticoef<-lgamma(nind+1)-sum(lgamma(nc+1))
-			
-			#log prob of capture history conditional on X
-			if(any(is.na(self$chtemp$chpar))){
-				self$chtemp$chpar<-array(NA,dim=c(ncpar+napar+length(apar_ind)+length(apar_occ)+length(g0list[[1]]),nobs))
-				self$chtemp$chout<-array(NA,dim=c(ncell,nind,nobs))
-			}
-			logpcapthist_arr<-array(0,dim=c(ncell,nind,nobs))
-			for(i in 1:nobs){
-				flagch<-TRUE
-				chpar<-c(cpar,apar,apar_ind,apar_occ,c(g0list[[i]]))
-				if(all(!is.na(self$chtemp$chpar[,i]))){
-					chpar_pre<-self$chtemp$chpar[,i]
-					if(all(chpar==chpar_pre)){
-						flagch<-FALSE
-					}
-				}
-				
-				if(flagch){
-					logpcapthist_arr[,,i]<-logpcapthist(type=obstype[i],
-							detect=secrdata$obs[[i]]$detect,
-							loglambda=loglambdalist[[i]],
-							effort=secrdata$obs[[i]]$effort,
-							effort_occ=secrdata$obs[[i]]$effort_occ,
-							srv=srv,
-							ind_cov=indcov)
-					self$chtemp$chpar[,i]<-chpar
-					self$chtemp$chout[,,i]<-logpcapthist_arr[,,i]
-				}else{
-					logpcapthist_arr[,,i]<-self$chtemp$chout[,,i]
-				}
-			}
-			
-			logpcapthist_mat<-rowSums(logpcapthist_arr,dim=2)
-			
-			#multinomial log-likelihood(pdot is cancelled out)
-			loglfmulti<-logmulticoef+sum(colsum_lp(logpcapthist_mat+outer(lnD+log(secrdata$area),rep(1,nind))-outer(rep(1,ncell),logd_area_pdot_ind)))
-			
-			####Poisson process likelihood (removal not implemented yet)
-			logpdot_x_grp <- logpzero_occ_x_arr%>%
-						aperm(perm=c(1,3,2))%>%
-						rowSums(dim=2)%>%
-						log1m_exp_mat()
-			logmix<-c(0,mixpar)-sum_lp(c(0,mixpar))
-			lambda_grp <- colsum_lp(outer(lnD+log(secrdata$area),rep(1,nindgrp))+outer(rep(1,ncell),logmix)+logpdot_x_grp)
-			loglfpois<-dpois(table(indcov),exp(lambda_grp),log=T)
-			names(loglfpois)<-NULL
-			res<-(sum(loglfpois)+loglfmulti)*loglfscale
-			if(verbose){
-				cat("[loglf]","\n",res,"\n",
-					"[population size]","\n",sum(exp(lnD)*secrdata$area),"\n")
-			}
-			return(res)
-		}
-	)
-)
+  R6Class("secrad",
+          public=list(
+            secrdata=NA,
+            envmodel=list(D~1,C~1,A~0),
+            indmodel=c(A=FALSE,g0=FALSE),
+            occmodel=c(A=FALSE,g0=FALSE),
+            adtemp=list(adpar=NA,adout=NA),
+            chtemp=list(chpar=NA,chout=NA),
+            lastpar=NULL,
+            initialize=function(secrdata){
+              self$secrdata<-secrdata
+            },
+            set_model=function(envmodel,indmodel,occmodel){
+              self$envmodel<-envmodel
+              self$indmodel<-indmodel
+              self$occmodel<-occmodel
+            },
+            del_temp=function(){
+              self$adtemp=list(adpar=NA,adout=NA)
+              self$chtemp=list(chpar=NA,chout=NA)
+            },
+            loglf=function(par,loglfscale=1,verbose=F,ids=NULL){
+              secrdata<-self$secrdata
+              envmodel<-self$envmodel
+              indmodel<-self$indmodel
+              occmodel<-self$occmodel
+              self$lastpar<-par
+              
+              #### Data Preparation for SGD or Full ####
+              # Determine scaling factor and subset data if ids are provided
+              full_nind <- secrdata$nind
+              
+              # Identify full individual covariates for model structure determination
+              if(any(indmodel) && !is.null(secrdata$ind_cov)){
+                indcov_full <- secrdata$ind_cov
+              } else {
+                indcov_full <- rep(0, full_nind)
+              }
+              
+              # Initialize analysis variables
+              if(!is.null(ids)){
+                # --- SGD Mode ---
+                if(any(ids > full_nind) | any(ids < 1)) stop("ids index out of bounds")
+                
+                # Subset dimensions
+                nind <- length(ids)
+                scaling_factor <- nind / full_nind
+                
+                # Subset individual covariates
+                indcov <- indcov_full[ids]
+                
+                # Subset observations (detection histories)
+                # Create a temporary list of observations with subsetted detect matrices
+                obs_list <- secrdata$obs
+                for(k in 1:length(obs_list)){
+                  if(!is.null(obs_list[[k]]$detect)){
+                    obs_list[[k]]$detect <- obs_list[[k]]$detect[, ids, drop=FALSE]
+                  }
+                }
+                
+                # Subset survival (if implemented later, currently assumed 1)
+                srv <- matrix(1, nrow=nind, ncol=secrdata$nocc)
+                
+              } else {
+                # --- Standard Mode ---
+                nind <- full_nind
+                scaling_factor <- 1
+                indcov <- indcov_full
+                obs_list <- secrdata$obs
+                srv <- matrix(1, nrow=nind, ncol=secrdata$nocc)
+              }
+              
+              ####prepare data for estimation
+              ncell<-secrdata$ncell
+              nocc<-secrdata$nocc
+              # nind is already set above
+              
+              #design matrices of grid
+              gridcov<-secrdata$grid_cov
+              if(!is.null(gridcov)){
+                if(any(is.na(gridcov))){
+                  stop("NA must not be included in covariates.\n")
+                }
+              }
+              modellist<-lapply(envmodel,"[",-2)
+              for(i in 1:length(modellist)){
+                names(modellist)[i]<-as.character(envmodel[[i]][2])
+              }
+              denv.mat<-model.matrix(modellist$D,data=gridcov)
+              denv.offset<-model.offset(model.frame(modellist$D,data=gridcov))
+              if(is.null(denv.offset)){
+                denv.offset<-rep(0,ncell)
+              }
+              
+              cenv.mat<-model.matrix(modellist$C,data=gridcov)
+              cenv.offset<-model.offset(model.frame(modellist$C,data=gridcov))
+              if(is.null(cenv.offset)){
+                cenv.offset<-rep(0,ncell)
+              }
+              
+              woaenv<-F
+              aenv.mat<-model.matrix(modellist$A,data=gridcov)
+              if(length(aenv.mat)==0){
+                aenv.mat<-matrix(0,nrow=ncell,ncol=1)
+                woaenv<-T
+              }else if(is.element("(Intercept)",colnames(aenv.mat))){
+                stop("Intercept cannot be included in the advection submodel.")
+              }
+              aenv.offset<-model.offset(model.frame(modellist$A,data=gridcov))
+              if(is.null(aenv.offset)){
+                aenv.offset<-rep(0,ncell)
+              }
+              
+              # individual covariate (already set as 'indcov')
+              
+              #occasion covariate
+              if(any(occmodel)){
+                occcov<-secrdata$occ_cov
+              }else{
+                occcov<-rep(0,nocc)
+              }
+              
+              ###partitioning parameters
+              #density
+              ndpar<-ncol(denv.mat)
+              dpar<-par[1:ndpar]
+              #connectivity
+              ncpar<-ncol(cenv.mat)
+              cpar<-par[(1:ncpar)+ndpar]
+              #advection
+              napar<-ifelse(woaenv,0,ncol(aenv.mat))
+              if(napar!=0){
+                apar<-apar2<-par[(1:napar)+ndpar+ncpar]
+              }else{
+                apar<-numeric(0)
+                apar2<-0
+              }
+              #g0
+              nobs<-length(obs_list)
+              obstype<-unlist(lapply(obs_list,"[[","type"))
+              npar_type<-c(1,1);names(npar_type)<-c("binom","poisson")
+              ng0par_obs<-npar_type[obstype]
+              g0par<-vector("list",nobs)
+              ng0par<-0
+              for(i in 1:nobs){
+                g0par[[i]]<-par[(1:ng0par_obs[i])+ng0par+ndpar+ncpar+napar]
+                ng0par<-ng0par+ng0par_obs[i]
+              }
+              #occasion
+              noccgrp<-length(unique(occcov))
+              noccpar<-sum(occmodel)*(noccgrp-1)
+              if(noccpar!=0){
+                occpar<-par[(1:noccpar)+ndpar+ncpar+napar+ng0par]
+                names(occpar)<-paste0(rep(names(occmodel)[occmodel],each=noccgrp-1),"_",rep(levels(factor(occcov))[-1],sum(occmodel)))
+              }else{
+                occpar<-numeric(0)
+              }
+              
+              # Note: Use indcov_full to determine group structure to ensure consistency even if subset misses a group
+              nindgrp<-length(unique(indcov_full))	
+              nindpar<-sum(indmodel)*(nindgrp-1)
+              nmixpar<-nindgrp-1
+              if(nindpar!=0){
+                indpar<-par[(1:nindpar)+ndpar+ncpar+napar+ng0par+noccpar]
+                names(indpar)<-paste0(rep(names(indmodel)[indmodel],each=nindgrp-1),"_",rep(levels(factor(indcov_full))[-1],sum(indmodel)))
+                mixpar<-par[(1:nmixpar)+nindpar+ndpar+ncpar+napar+ng0par+noccpar]
+              }else{
+                indpar<-numeric(0)
+                mixpar<-numeric(0)
+              }
+              
+              if(!is.null(secrdata$auxiliary)){
+                aux<-secrdata$auxiliary
+              }else{
+                aux<-NULL
+              }
+              
+              #
+              if(verbose){
+                cat("[parameters]\n","density ",dpar,"\n","connectivity ", cpar,
+                    "\n","advection ",apar,"\n","detectability ",unlist(g0par),
+                    "\n","occasion ",occpar,
+                    "\n","individual ",indpar,"\n","mixing parameter ",mixpar,"\n")
+              }
+              #log mean density
+              lnD<-c(denv.mat%*%dpar+denv.offset)
+              
+              #individual covariate of advection
+              grepA<-grep("^A",names(indpar))
+              
+              if(length(grepA)!=0){
+                apar_ind<-c(0,indpar[grepA])
+              }else{
+                apar_ind<-0
+              }
+              
+              #individual covariate of detection
+              grepg0<-grep("^g0",names(indpar))
+              if(length(grepg0)!=0){
+                g0par_ind<-c(0,indpar[grepg0])
+              }else{
+                g0par_ind<-0
+              }
+              ng0par_ind<-length(g0par_ind)
+              
+              #occasion covariate of advection
+              grepAocc<-grep("^A",names(occpar))
+              
+              if(length(grepAocc)!=0){
+                apar_occ<-c(0,occpar[grepAocc])
+              }else{
+                apar_occ<-0
+              }
+              
+              #occasion covariate of detection
+              grepg0occ<-grep("^g0",names(occpar))
+              if(length(grepg0occ)!=0){
+                g0par_occ<-c(0,occpar[grepg0occ])
+              }else{
+                g0par_occ<-0
+              }
+              ng0par_occ<-length(g0par_occ)
+              
+              
+              #list of g0 coef
+              g0list<-vector("list",ng0par)
+              for(i in 1:nobs){
+                g0list[[i]]<-outer(matrix(1,ng0par_ind,ng0par_occ),g0par[[i]])
+                g0list[[i]][,,1]<-g0list[[i]][,,1]+outer(g0par_ind,rep(1,ng0par_occ))+outer(rep(1,ng0par_ind),g0par_occ)
+              }
+              
+              #advection-diffusion model
+              if(any(is.na(self$adtemp$adpar))){
+                self$adtemp$adpar<-array(NA,dim=c(ncpar+napar+2,length(apar_ind),length(apar_occ)))
+                self$adtemp$adout<-array(NA,dim=c(ncell,ncell,length(apar_ind),length(apar_occ)))
+              }
+              logp_arr<-array(NA,dim=c(ncell,ncell,length(apar_ind),length(apar_occ)))
+              for(i in 1:length(apar_ind)){
+                for(j in 1:length(apar_occ)){
+                  flag<-TRUE
+                  adpar<-c(cpar,apar,apar_ind[i],apar_occ[j])
+                  if(all(!is.na(self$adtemp$adpar[,i,j]))){
+                    adpar_pre<-self$adtemp$adpar[,i,j]
+                    if(all(adpar==adpar_pre)){
+                      flag<-FALSE
+                    }
+                  }
+                  if(flag){
+                    logc<-c(cenv.mat%*%matrix(cpar))+cenv.offset
+                    loga<-c(aenv.mat%*%matrix(apar2))+aenv.offset+apar_ind[i]+apar_occ[j]
+                    logp_arr[,,i,j]<-advdiff.eigen(mucoords=secrdata$coords,
+                                                   gridcoords=secrdata$coords,
+                                                   logc=logc,
+                                                   loga=loga,
+                                                   neighmat=secrdata$neighmat,
+                                                   resolution=secrdata$resolution,
+                                                   logprob=T)
+                    self$adtemp$adpar[,i,j]<-adpar
+                    self$adtemp$adout[,,i,j]<-logp_arr[,,i,j]
+                  }else{
+                    logp_arr[,,i,j]<-self$adtemp$adout[,,i,j]
+                  }
+                }
+              }
+              
+              #mean number of detection (or cloglog of prob for binimial)
+              loglambdalist<-vector("list",nobs)
+              nindgrp_lambda<-pmax(length(apar_ind),length(g0par_ind))
+              for(i in 1:nobs){
+                loglambdalist[[i]]<-array(NA,dim=c(ncell,length(obs_list[[i]]$effort),nindgrp_lambda))
+                A_effort_occtype<- ifelse(rep(occmodel["A"],length(obs_list[[i]]$effort_occ)),
+                                          occcov[obs_list[[i]]$effort_occ]+1,
+                                          rep(1,length(obs_list[[i]]$effort_occ)))
+                g0_effort_occtype<-ifelse(rep(occmodel["g0"],length(obs_list[[i]]$effort_occ)),
+                                          occcov[obs_list[[i]]$effort_occ]+1,
+                                          rep(1,length(obs_list[[i]]$effort_occ)))
+                for(j in 1:nindgrp_lambda){
+                  if(indmodel["A"]){
+                    logp<-logp_arr[,,j,,drop=F]
+                  }else{
+                    logp<-logp_arr[,,1,,drop=F]
+                  }
+                  g0list_indocc<-g0list[[i]][j,g0_effort_occtype,,drop=F]
+                  loglambdalist[[i]][,,j]<-loglambda.ad(type=obstype[i],g0list_indocc,obs_list[[i]]$effort,obs_list[[i]]$effort_loc,A_effort_occtype,logp,logprob=T)
+                }
+              }
+              
+              ####calculation of pdot
+              #log probability of non-detection of each individual group and occasion group
+              logpzerolist<-vector("list",nobs)
+              for(i in 1:nobs){
+                logpzerolist[[i]]<-array(NA,dim=c(ncell,length(obs_list[[i]]$effort),nindgrp))
+                for(j in 1:nindgrp){
+                  logpzerolist[[i]][,,j]<-logpzero.ad(type=obstype[i],loglambdalist[[i]][,,j],obs_list[[i]]$effort)
+                }
+              }
+              
+              #log 1-pdot for each occasion conditional on X
+              logpzero_occ_x_arr<-array(NA,dim=c(ncell,nocc,nindgrp))
+              for(i in 1:nocc){
+                logpzerolist_occ<-vector("list",nobs)
+                for(j in 1:nobs){
+                  cond<-obs_list[[j]]$effort_occ==i
+                  logpzerolist_occ[[j]]<-logpzerolist[[j]][,cond,,drop=F]
+                }
+                
+                for(k in 1:nindgrp){
+                  logpzerolist_occ_grp<-lapply(logpzerolist_occ,"[",,,k)
+                  logpzero_occ_x_arr[,i,k]<-logpzero.x(logpzerolist_occ_grp)
+                }
+              }
+              
+              
+              #ln(pdot) for each individual
+              # Map subsetted indcov to original group indices
+              ind_group_indices <- indcov - min(indcov_full) + 1
+              logpzero_occ_x_ind<-logpzero_occ_x_arr[,,ind_group_indices,drop=F]
+              
+              logpzero_x_ind<-(logpzero_occ_x_ind*outer(rep(1,ncell),t(srv)))%>%
+                aperm(perm=c(1,3,2))%>%
+                rowSums(dim=2)
+              logpdot_x_ind<-log1m_exp_mat(logpzero_x_ind)			
+              
+              #lnD+ln(area)+ln(pdot) for each individual
+              logd_area_pdot_x_ind<-outer(lnD+log(secrdata$area),rep(1,nind))+logpdot_x_ind
+              
+              #logsumexp(lnD+ln(area)+ln(pdot)) for each individual (log(Expected Count per Ind))
+              logd_area_pdot_ind<-colsum_lp(logd_area_pdot_x_ind)
+              
+              #####likelihood of individual capture history conditional on detection at least once
+              #multinomial coefficient
+              detectlist<-lapply(obs_list,"[[","detect")
+              detect_append<-detectlist[[1]]
+              if(nobs>1){
+                for(i in 2:nobs){
+                  detect_append<-rbind(detect_append,detectlist[[i]])
+                }
+              }
+              detect_pattern<-apply(detect_append,2,paste,collapse="_")
+              nc<-table(detect_pattern)
+              names(nc)<-NULL
+              logmulticoef<-lgamma(nind+1)-sum(lgamma(nc+1))
+              
+              #log prob of capture history conditional on X
+              if(any(is.na(self$chtemp$chpar))){
+                # Note: chpar size depends on structure, chout depends on nind.
+                # If SGD (ids provided), we should probably not use/update cache or use it carefully.
+                # For safety with SGD, we skip caching or clear it if dimensions mismatch.
+                # But here we just re-allocate if dim doesn't match nind.
+                self$chtemp$chpar<-array(NA,dim=c(ncpar+napar+length(apar_ind)+length(apar_occ)+length(g0list[[1]]),nobs))
+                self$chtemp$chout<-array(NA,dim=c(ncell,nind,nobs))
+              }
+              # Check cache dimension consistency (if nind changes due to SGD)
+              if(dim(self$chtemp$chout)[2] != nind){
+                self$chtemp$chpar<-array(NA,dim=c(ncpar+napar+length(apar_ind)+length(apar_occ)+length(g0list[[1]]),nobs))
+                self$chtemp$chout<-array(NA,dim=c(ncell,nind,nobs))
+              }
+              
+              logpcapthist_arr<-array(0,dim=c(ncell,nind,nobs))
+              for(i in 1:nobs){
+                flagch<-TRUE
+                chpar<-c(cpar,apar,apar_ind,apar_occ,c(g0list[[i]]))
+                if(all(!is.na(self$chtemp$chpar[,i]))){
+                  chpar_pre<-self$chtemp$chpar[,i]
+                  if(all(chpar==chpar_pre)){
+                    flagch<-FALSE
+                  }
+                }
+                # For SGD, it is safer to recompute or ensure cache is valid for *these* ids.
+                # Simplification: Always compute if ids are present (SGD usually iterates par anyway)
+                if(!is.null(ids)) flagch <- TRUE 
+                
+                if(flagch){
+                  logpcapthist_arr[,,i]<-logpcapthist(type=obstype[i],
+                                                      detect=obs_list[[i]]$detect,
+                                                      loglambda=loglambdalist[[i]],
+                                                      effort=obs_list[[i]]$effort,
+                                                      effort_occ=obs_list[[i]]$effort_occ,
+                                                      srv=srv,
+                                                      ind_cov=indcov)
+                  if(is.null(ids)){ # Only cache if full calculation
+                    self$chtemp$chpar[,i]<-chpar
+                    self$chtemp$chout[,,i]<-logpcapthist_arr[,,i]
+                  }
+                }else{
+                  logpcapthist_arr[,,i]<-self$chtemp$chout[,,i]
+                }
+              }
+              
+              logpcapthist_mat<-rowSums(logpcapthist_arr,dim=2)
+              
+              #multinomial log-likelihood (Sum of log(Li / E[n_i]))
+              #This roughly equates to Sum(log(Li)) - Sum(log(Lambda_i))
+              loglfmulti<-logmulticoef+sum(colsum_lp(logpcapthist_mat+outer(lnD+log(secrdata$area),rep(1,nind))-outer(rep(1,ncell),logd_area_pdot_ind)))
+              
+              ####Poisson process likelihood
+              # Calculate global expected counts (Lambda) per group
+              logpdot_x_grp <- logpzero_occ_x_arr%>%
+                aperm(perm=c(1,3,2))%>%
+                rowSums(dim=2)%>%
+                log1m_exp_mat()
+              logmix<-c(0,mixpar)-sum_lp(c(0,mixpar))
+              lambda_grp_log <- colsum_lp(outer(lnD+log(secrdata$area),rep(1,nindgrp))+outer(rep(1,ncell),logmix)+logpdot_x_grp)
+              
+              if(is.null(ids)){
+                # --- Full Likelihood ---
+                # Standard Poisson term: dpois(n, Lambda) = n*log(Lambda) - Lambda - ...
+                # table(indcov) counts occurrences of each group in the FULL dataset
+                # We map indcov levels to 1..nindgrp
+                grp_counts <- table(factor(indcov - min(indcov_full) + 1, levels=1:nindgrp))
+                loglfpois<-dpois(as.numeric(grp_counts),exp(lambda_grp_log),log=T)
+                res<-(sum(loglfpois)+loglfmulti)*loglfscale
+              } else {
+                # --- SGD Likelihood Correction ---
+                # We want to return: Sum_{i in batch} log(L_i) - (n_batch / N_total) * Lambda_total
+                # loglfmulti provides: Sum_{i in batch} (log(L_i) - log(Lambda_{g(i)}))
+                # So we need to add back Sum_{i in batch} log(Lambda_{g(i)}) and subtract scaled Lambda_total.
+                
+                # Get the group index for each individual in the subset
+                ind_grp_idx <- indcov - min(indcov_full) + 1
+                
+                # Term to add back: log(Lambda) for each observed individual
+                term_add <- sum(lambda_grp_log[ind_grp_idx])
+                
+                # Term to subtract: Scaled Total Lambda
+                term_sub <- sum(exp(lambda_grp_log)) * scaling_factor
+                
+                # Combine
+                # Note: logmulticoef is generally constant w.r.t params or negligible for SGD gradients usually,
+                # but we include it for consistency.
+                res <- (loglfmulti + term_add - term_sub) * loglfscale
+              }
+              
+              if(verbose){
+                cat("[loglf]","\n",res,"\n",
+                    "[population size]","\n",sum(exp(lnD)*secrdata$area),"\n")
+              }
+              return(res)
+            }
+          )
+  )
 		
 ##Class 'secrad_data'
 secrad_data<-

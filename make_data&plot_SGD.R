@@ -153,7 +153,7 @@ library(gdistance)
 library(viridis)
 library(secr)
 
-sourcepath<-"../../ADCR/adcrtest2/secrad.r"
+sourcepath<-"secrad_SGD.r"
 source(sourcepath, encoding = "UTF-8")
 
 # place <- place %>% dplyr::select(PCODE,Lat,Lon)
@@ -297,7 +297,82 @@ initpar<-generate_init(secrad_obj)
 initpar["dens_0"]<--1
 initpar["conn_0"]<--2
 initpar["g0_1"]<--5
-secrad_res<-optim(initpar,secrad_obj$loglf,method="BFGS",control=list(maxit=1000,trace=2),loglfscale=-1,verbose=T,hessian=T)
+
+save.image("data_20260202_SGD.RData")
+
+# --- SGD実装 (ADCRモデル実装ノート準拠) ---
+library(numDeriv)
+
+# 1. データの層別化とサンプリング設定
+# dataset$detect は行が個体、列がトラップ/機会と仮定して rowSums で捕獲回数を計算
+capture_counts <- rowSums(dataset$detect) 
+
+multi_ids <- which(capture_counts > 1)   # 複数回捕獲個体 (全数使用)
+single_ids <- which(capture_counts == 1)  # 1回のみ捕獲個体 (サンプリング対象)
+
+# サンプリング設定 (実装ノート Step 1)
+sampling_rate <- 0.1  # 10%
+sample_size <- floor(length(single_ids) * sampling_rate)
+weight_single <- 1 / sampling_rate # 重み
+
+# 2. 重み付き尤度関数の定義 (実装ノート Step 2)
+# ※注意: secrad.r 側の loglf が ids 引数を受け取れるよう修正されている必要があります
+weighted_loglf <- function(par, ids_multi, ids_single, weight, obj) {
+  
+  # 複数回捕獲個体の対数尤度 (loglfscale=1 で正の対数尤度を取得)
+  ll_multi <- obj$loglf(par, ids = ids_multi, loglfscale = 1)
+  
+  # サンプリングされた1回捕獲個体の対数尤度
+  ll_single_sample <- obj$loglf(par, ids = ids_single, loglfscale = 1)
+  
+  # 全体の近似対数尤度: Total LL ≈ LL(Multi) + LL(Single_sampled) * Weight
+  total_ll <- ll_multi + (ll_single_sample * weight)
+  
+  return(total_ll)
+}
+
+# 3. 最適化ループ (SGD) (実装ノート Step 3)
+current_par <- initpar
+learning_rate <- 0.01  # 学習率
+max_iter <- 1000       # 最大反復回数
+
+cat("Starting SGD Optimization...\n")
+
+for(iter in 1:max_iter) {
+  
+  # ステップA: 1回捕獲個体の再サンプリング (Stochasticity)
+  current_single_sample <- sample(single_ids, size = sample_size)
+  
+  # ステップB: 勾配計算 (Gradient Ascent for Maximum Likelihood)
+  # weighted_loglf の勾配を求める
+  g <- numDeriv::grad(func = weighted_loglf, 
+                      x = current_par, 
+                      ids_multi = multi_ids,
+                      ids_single = current_single_sample, 
+                      weight = weight_single, 
+                      obj = secrad_obj)
+  
+  # ステップC: パラメータ更新 (勾配方向へ加算)
+  current_par <- current_par + g * learning_rate
+  
+  # ログ出力 (適宜間引いてください)
+  if(iter %% 10 == 0 || iter == 1) {
+    # 現在の推定尤度を計算（モニタリング用）
+    current_ll <- weighted_loglf(current_par, multi_ids, current_single_sample, weight_single, secrad_obj)
+    cat(sprintf("Iter: %d, LL: %.2f, Pars: %s\n", iter, current_ll, paste(round(current_par, 4), collapse=", ")))
+  }
+}
+
+# 4. 結果の格納 (optimの出力形式に合わせて整形)
+secrad_res <- list(
+  par = current_par,
+  value = weighted_loglf(current_par, multi_ids, sample(single_ids, sample_size), weight_single, secrad_obj), # 最終的な近似尤度
+  counts = c(function = max_iter, gradient = max_iter),
+  convergence = 0,
+  message = "SGD optimization completed"
+)
+
+cat("SGD Optimization Finished.\n")
 
 # Plotting data -----------------------------------------------------------
 Japan <- st_read("S:\\common\\personal_backup\\kumada\\Virbsagi\\R\\Japan_merge2.shp")
