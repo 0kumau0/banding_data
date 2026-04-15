@@ -15,8 +15,7 @@ library(R6)
 library(numDeriv)
 
 source("functions.R", encoding = "UTF-8")
-#sourcepath<-"../../ADCR/adcrtest2/secrad.r"
-sourcepath<-"secrad.r"
+sourcepath<-"../../ADCR/adcrtest2/secrad.r"
 source(sourcepath, encoding = "UTF-8")
 
 # # テストデータ作成コード ( 列=個体, 行=調査) -----------------------------------------
@@ -182,20 +181,19 @@ sample_size <- max(1, floor(length(single_ids) * sampling_rate))
 weight_single <- 1 / sampling_rate
 
 initpar_test <- generate_init(secrad_obj)
-# initpar_test["dens_0"]<--1
-# initpar_test["conn_0"]<--2
-# initpar_test["g0_1"]<--5
+initpar_test["dens_0"]<--1
+initpar_test["conn_0"]<--2
+initpar_test["g0_1"]<--5
 
-#初期値をoptim推定値に
-initpar_test["dens_0"]<--0.5334
-initpar_test["conn_0"]<--10.3860
-initpar_test["g0_1"]<--0.0544
-initpar_test["conn_agri"] <- -2.7247
-initpar_test["conn_wtr"] <- -2.0008
+initpar_test["dens_0"]<--0.4334
+initpar_test["conn_0"]<--9.3860
+initpar_test["g0_1"]<- 0.1544
+initpar_test["conn_agri"] <- -1.7247
+initpar_test["conn_wtr"] <- -1.0008
 
 # 初期パラメータと学習設定
 current_par <- initpar_test
-learning_rate <- 0.01
+learning_rate <- 0.0001
 max_iter <- 100
 
 # 記録用
