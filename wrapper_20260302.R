@@ -151,99 +151,172 @@ create_subset_secrad <- function(original_secrdata, ids, model_settings) {
 
 
 # 2. SGD用ラッパー尤度関数
-wrapper_weighted_loglf <- function(par, ids_multi, ids_single, weight, original_secrdata, model_settings) {
-  obj_multi <- create_subset_secrad(original_secrdata, ids_multi, model_settings)
-  ll_multi <- obj_multi$loglf(par, loglfscale = 1)
+## SGD用：loglf(sgd=TRUE) のパーツを使う目的関数
+wrapper_sgd_loglf <- function(par,
+                              ids_multi,
+                              ids_single,
+                              sampling_rate,
+                              original_secrdata,
+                              model_settings,
+                              verbose = FALSE) {
   
-  obj_single <- create_subset_secrad(original_secrdata, ids_single, model_settings)
-  ll_single <- obj_single$loglf(par, loglfscale = 1)
+  ## 複数回捕獲個体のオブジェクト
+  obj_multi <- create_subset_secrad(
+    original_secrdata = original_secrdata,
+    ids = ids_multi,
+    model_settings = model_settings
+  )
   
-  return(ll_multi + (ll_single * weight))
+  out_multi <- obj_multi$loglf(
+    par,
+    loglfscale = 1,
+    sgd = TRUE
+  )
+  
+  ## 単回捕獲個体のオブジェクト
+  obj_single <- create_subset_secrad(
+    original_secrdata = original_secrdata,
+    ids = ids_single,
+    model_settings = model_settings
+  )
+  
+  out_single <- obj_single$loglf(
+    par,
+    loglfscale = 1,
+    sgd = TRUE
+  )
+  
+  ## 実際に検出された個体数 n
+  ## 今回のモデルでは indmodel が FALSE なので scalar でよい
+  n_detected <- original_secrdata$nind
+  
+  ## 少なくとも1回検出された個体数の Poisson process 尤度
+  ll_pois <- dpois(
+    x = n_detected,
+    lambda = exp(out_multi$lambda_grp),
+    log = TRUE
+  )
+  
+  ## 捕獲履歴部分
+  ## 複数回個体は全使用、単回個体は sampling_rate で補正
+  ll_ch <- out_multi$loglfmulti + out_single$loglfmulti / sampling_rate
+  
+  res <- sum(ll_pois) + ll_ch
+  
+  if (verbose) {
+    cat("[SGD loglf parts]\n")
+    cat("ll_pois       :", sum(ll_pois), "\n")
+    cat("ll_multi      :", out_multi$loglfmulti, "\n")
+    cat("ll_single/r   :", out_single$loglfmulti / sampling_rate, "\n")
+    cat("total         :", res, "\n")
+  }
+  
+  return(res)
 }
 
 
 # SGDパラメータ設定 --------------------------------------------------------------
 
 # 捕獲数
-capture_counts <- colSums(dataset_test$detect) 
+## SGDパラメータ設定 --------------------------------------------------------------
+
+capture_counts <- colSums(dataset_test$detect)
 multi_ids <- which(capture_counts > 1)
 single_ids <- which(capture_counts == 1)
 
-# model
 current_model_settings <- list(
-  envmodel = list(D ~ 1, C ~ agri + wtr, A ~ 0), 
+  envmodel = list(D ~ 1, C ~ agri + wtr, A ~ 0),
   indmodel = c(A = FALSE, g0 = FALSE),
   occmodel = c(A = FALSE, g0 = FALSE)
 )
 
-sampling_rate <- 1.0 
+sampling_rate <- 1.0
 sample_size <- max(1, floor(length(single_ids) * sampling_rate))
-weight_single <- 1 / sampling_rate
 
-initpar_test <- generate_init(secrad_obj)
-initpar_test["dens_0"]<--1
-initpar_test["conn_0"]<--2
-initpar_test["g0_1"]<--5
+## 初期値
+current_par <- generate_init(secrad_obj)
 
-initpar_test["dens_0"]<--0.4334
-initpar_test["conn_0"]<--9.3860
-initpar_test["g0_1"]<- 0.1544
-initpar_test["conn_agri"] <- -1.7247
-initpar_test["conn_wtr"] <- -1.0008
+current_par["dens_0"] <- secrad_res$par["dens_0"]
+current_par["conn_0"] <- secrad_res$par["conn_0"]
+current_par["conn_agri"] <- secrad_res$par["conn_agri"]
+current_par["conn_wtr"] <- secrad_res$par["conn_wtr"]
+current_par["g0_1"] <- secrad_res$par["g0_1"]
 
-# 初期パラメータと学習設定
-current_par <- initpar_test
-learning_rate <- 0.0001
-max_iter <- 100
+## 学習設定
+learning_rate <- 0.01
+max_iter <- 500
 
-# 記録用
 trace_par <- matrix(NA, nrow = max_iter, ncol = length(current_par))
-trace_ll <- numeric(max_iter)
+colnames(trace_par) <- names(current_par)
 
+trace_ll <- rep(NA, max_iter)
 
-
-# SGD ループ実行 ---------------------------------------------------------------
-cat("--- SGD Optimization (Wrapper Mode) Started ---\n")
+cat("--- SGD Optimization using sgd=TRUE parts Started ---\n")
 
 system.time(
-for(iter in 1:max_iter) {
-  
-  # サンプリング
-  if(length(single_ids) > sample_size) {
-    current_single_sample <- sample(single_ids, size = sample_size)
-  } else {
-    current_single_sample <- single_ids
+  for (iter in 1:max_iter) {
+    
+    ## 単回捕獲個体のサンプリング
+    if (length(single_ids) > sample_size) {
+      current_single_sample <- sample(single_ids, size = sample_size)
+    } else {
+      current_single_sample <- single_ids
+    }
+    
+    ## 勾配計算
+    g <- tryCatch({
+      numDeriv::grad(
+        func = wrapper_sgd_loglf,
+        x = current_par,
+        ids_multi = multi_ids,
+        ids_single = current_single_sample,
+        sampling_rate = sampling_rate,
+        original_secrdata = secrdata_test,
+        model_settings = current_model_settings
+      )
+    }, error = function(e) {
+      cat(sprintf("\n[Error] Iter %d で勾配計算エラー: %s\n", iter, e$message))
+      return(rep(NA, length(current_par)))
+    })
+    
+    if (any(is.na(g)) || any(!is.finite(g))) {
+      cat("勾配が NA または Inf になったため、SGDを停止します。\n")
+      break
+    }
+    
+    ## 対数尤度を最大化するので + 方向に更新
+    current_lr <- learning_rate / (1 + 0.01 * iter)
+    current_par <- current_par + current_lr * g
+    
+    trace_par[iter, ] <- current_par
+    
+    ## モニタリング
+    if (iter %% 50 == 0 || iter == 1) {
+      curr_ll <- wrapper_sgd_loglf(
+        par = current_par,
+        ids_multi = multi_ids,
+        ids_single = current_single_sample,
+        sampling_rate = sampling_rate,
+        original_secrdata = secrdata_test,
+        model_settings = current_model_settings,
+        verbose = FALSE
+      )
+      
+      trace_ll[iter] <- curr_ll
+      
+      cat(sprintf(
+        "Iter: %3d, LR: %.5f, SGD objective: %.3f\n",
+        iter, current_lr, curr_ll
+      ))
+    }
   }
-  
-  # 勾配計算
-  g <- numDeriv::grad(
-    func = wrapper_weighted_loglf,
-    x = current_par,
-    ids_multi = multi_ids,
-    ids_single = current_single_sample,
-    weight = weight_single,
-    original_secrdata = secrdata_test, 
-    model_settings = current_model_settings
-  )
-  
-  # パラメータ更新 #ここをMomentum法などにかえる？
-  current_lr <- learning_rate / (1 + 0.01 * iter)
-  current_par <- current_par + g * current_lr
-  
-  trace_par[iter, ] <- current_par
-  
-  if(iter %% 50 == 0 || iter == 1) {
-    curr_ll <- wrapper_weighted_loglf(
-      current_par, multi_ids, current_single_sample, weight_single, 
-      secrdata_test, current_model_settings
-    )
-    trace_ll[iter] <- curr_ll
-    cat(sprintf("Iter: %3d, LR: %.4f, ApproxLL: %.2f\n", iter, current_lr, curr_ll))
-  }
-}
 )
+
 cat("--- SGD Completed ---\n")
-save.image("SGDtest_20260413.Rdata")
+save.image("SGDtest_20260421.Rdata")
+
+
+
 
 # 結果の比較 -------------------------------------------------------------------
 cat("\n【結果比較】\n")
@@ -251,25 +324,27 @@ cat(sprintf("%-15s | %-15s | %-15s\n", "Parameter", "True (optim)", "Est (SGD)")
 cat("--------------------------------------------------\n")
 
 # secrad_res と比較
-for(i in 1:length(current_par)) {
-  par_name <- names(current_par)[i]
-  true_val <- secrad_res$par[i] # 正解の値
-  sgd_val <- current_par[i]   # SGDの値
-  
-  cat(sprintf("%-15s | %15.4f | %15.4f\n", par_name, true_val, sgd_val))
-}
+par_check <- secrad_res$par
 
-# plot
-par(mfrow=c(2,3)) 
-for(i in 1:length(current_par)){
-  plot(trace_par[,i], type="l", main=names(current_par)[i], 
-       xlab="Iter", ylab="Value", col="blue")
-  abline(h=secrad_res$par[i], col="red", lty=2, lwd=2) # 正解のライン
-}
-par(mfrow=c(1,1)) 
+ll_full <- secrad_obj$loglf(
+  par_check,
+  loglfscale = 1
+)
 
+ll_sgd_parts <- wrapper_sgd_loglf(
+  par = par_check,
+  ids_multi = multi_ids,
+  ids_single = single_ids,
+  sampling_rate = 1.0,
+  original_secrdata = secrdata_test,
+  model_settings = current_model_settings,
+  verbose = TRUE
+)
 
-
+cat("\n[Check]\n")
+cat("full loglf       :", ll_full, "\n")
+cat("sgd-parts loglf  :", ll_sgd_parts, "\n")
+cat("difference       :", ll_full - ll_sgd_parts, "\n")
 
 
 # 
