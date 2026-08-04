@@ -234,13 +234,18 @@ sampling_rate <- 1.0
 sample_size <- max(1, floor(length(single_ids) * sampling_rate))
 
 ## 初期値
-current_par <- generate_init(secrad_obj)
+initpar_test <- generate_init(secrad_obj)
+initpar_test["dens_0"]<--1
+initpar_test["conn_0"]<--2
+initpar_test["g0_1"]<--5
 
-current_par["dens_0"] <- secrad_res$par["dens_0"]
-current_par["conn_0"] <- secrad_res$par["conn_0"]
-current_par["conn_agri"] <- secrad_res$par["conn_agri"]
-current_par["conn_wtr"] <- secrad_res$par["conn_wtr"]
-current_par["g0_1"] <- secrad_res$par["g0_1"]
+current_par <- initpar_test
+
+# current_par["dens_0"] <- secrad_res$par["dens_0"]
+# current_par["conn_0"] <- secrad_res$par["conn_0"]
+# current_par["conn_agri"] <- secrad_res$par["conn_agri"]
+# current_par["conn_wtr"] <- secrad_res$par["conn_wtr"]
+# current_par["g0_1"] <- secrad_res$par["g0_1"]
 
 ## 学習設定
 learning_rate <- 0.01
@@ -312,8 +317,14 @@ system.time(
   }
 )
 
-cat("--- SGD Completed ---\n")
-save.image("SGDtest_20260421.Rdata")
+#cat("--- SGD Completed ---\n")
+save(
+  secrad_res,
+  current_par,
+  trace_par,
+  trace_ll,
+  file = "SGD_result_20260730.Rdata"
+)
 
 
 
@@ -346,6 +357,23 @@ cat("full loglf       :", ll_full, "\n")
 cat("sgd-parts loglf  :", ll_sgd_parts, "\n")
 cat("difference       :", ll_full - ll_sgd_parts, "\n")
 
+# secrad_res と比較
+for(i in 1:length(current_par)) {
+  par_name <- names(current_par)[i]
+  true_val <- secrad_res$par[i] # 正解の値
+  sgd_val <- current_par[i]   # SGDの値
+  
+  cat(sprintf("%-15s | %15.4f | %15.4f\n", par_name, true_val, sgd_val))
+}
+
+# plot
+par(mfrow=c(2,3)) 
+for(i in 1:length(current_par)){
+  plot(trace_par[,i], type="l", main=names(current_par)[i], 
+       xlab="Iter", ylab="Value", col="blue")
+  abline(h=secrad_res$par[i], col="red", lty=2, lwd=2) # 正解のライン
+}
+par(mfrow=c(1,1)) 
 
 # 
 # 
