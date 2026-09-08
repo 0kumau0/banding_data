@@ -302,11 +302,12 @@ initpar_test["g0_1"] <- -5
 current_par <- initpar_test
 #current_par <- secrad_res$par
 
+
 print(round(current_par, 5))
 
 # Adam settings --------------------------------------
 
-max_iter <- 200
+max_iter <- 100
 
 alpha_vec <- rep(
   0.01,
@@ -611,7 +612,72 @@ save(
   grad_method,
   grad_eps,
   time_adam_sgd,
-  file = "SGD_Adam_result_20260824.Rdata"
+  file = "SGD_Adam_result_20260903.Rdata"
+)
+trace_par_t  <- trace_par[1:iter, ]
+trace_ll_t   <- trace_ll[1:iter]
+trace_grad_t <- trace_grad[1:iter, ]
+trace_step_t <- trace_step[1:iter, ]
+
+load("SGD_Adam_result_20260902.Rdata")
+trace_par_n <- rbind(trace_par, trace_par_t)
+trace_ll_n <- rbind(trace_ll, trace_ll_t)
+trace_grad_n <- rbind(trace_grad, trace_grad_t)
+trace_step_n <- rbind(trace_step, trace_step_t) 
+
+load("SGD_Adam_result_20260903.Rdata")
+trace_par  <- trace_par_n
+trace_ll   <- trace_ll_n
+trace_grad <- trace_grad_n
+trace_step <- trace_step_n
+
+# load("SGD_Adam_result_20260821.Rdata")
+# trace_par_0821  <- trace_par[1:200, ]
+# trace_ll_0821   <- trace_ll[1:200]
+# trace_grad_0821 <- trace_grad[1:200, ]
+# trace_step_0821 <- trace_step[1:200, ]
+# 
+# load("SGD_Adam_result_20260824.Rdata")
+# trace_par_0824  <- trace_par[1:30, ]
+# trace_ll_0824   <- trace_ll[1:30]
+# trace_grad_0824 <- trace_grad[1:30, ]
+# trace_step_0824 <- trace_step[1:30, ]
+# 
+# load("SGD_Adam_result_20260831-1.Rdata")
+# trace_par_0831  <- trace_par[200:300, ]
+# trace_ll_0831   <- trace_ll[200:300]
+# trace_grad_0831 <- trace_grad
+# trace_step_0831 <- trace_step
+# 
+# load("SGD_Adam_result_20260831-2.Rdata")
+# trace_par_0831_2  <- trace_par[1:100, ]
+# trace_ll_0831_2  <- trace_ll[1:100]
+# trace_grad_0831_2 <- trace_grad[1:100, ]
+# trace_step_0831_2 <- trace_step[1:100, ]
+# 
+# trace_par <- rbind(trace_par_0821, trace_par_0824) %>% rbind(trace_par_0831) %>% rbind(trace_par_0831_2)
+# trace_ll <- rbind(trace_ll_0821, trace_ll_0824) %>% rbind(trace_ll_0831) %>% rbind(trace_ll_0831_2)
+# trace_grad <- rbind(trace_grad_0821, trace_grad_0824) %>% rbind(trace_grad_0831) %>% rbind(trace_grad_0831_2)
+# trace_step <- rbind(trace_step_0821, trace_step_0824) %>% rbind(trace_step_0831) %>% rbind(trace_step_0831_2)
+
+save(
+  secrad_res,
+  final_par,
+  trace_par,
+  trace_ll,
+  trace_grad,
+  trace_step,
+  sampling_rate,
+  sample_size,
+  alpha_vec,
+  beta1,
+  beta2,
+  eps_adam,
+  max_step,
+  grad_method,
+  grad_eps,
+  time_adam_sgd,
+  file = "SGD_Adam_result_20260904.Rdata"
 )
 
 # secrad_res と比較
@@ -622,6 +688,8 @@ for(i in 1:length(current_par)) {
   
   cat(sprintf("%-15s | %15.4f | %15.4f\n", par_name, true_val, sgd_val))
 }
+
+
 
 # plot
 par(mfrow=c(2,3)) 
