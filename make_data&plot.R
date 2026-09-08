@@ -153,7 +153,7 @@ library(gdistance)
 library(viridis)
 library(secr)
 
-sourcepath<-"../../ADCR/adcrtest2/secrad.r"
+sourcepath<-"adcrsgd/secrad.r"
 source(sourcepath, encoding = "UTF-8")
 
 # place <- place %>% dplyr::select(PCODE,Lat,Lon)
