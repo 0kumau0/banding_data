@@ -4,3 +4,4 @@
 .Ruserdata
 *.png
 config.R
+examples/*.pdf
