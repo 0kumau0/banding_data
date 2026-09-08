@@ -9,7 +9,7 @@ library(viridis)
 library(secr)
 
 source("functions.R", encoding = "UTF-8")
-sourcepath<-"../../ADCR/adcrtest2/secrad.r"
+sourcepath<-"adcrsgd/secrad.r" 
 source(sourcepath, encoding = "UTF-8")
 
 effort<-read_csv("../../ADCR/doi_10_5061_dryad_ksn02v7bq__v20250117/effort_231225.csv")

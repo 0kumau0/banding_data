@@ -15,7 +15,7 @@ library(R6)
 library(numDeriv)
 
 source("functions.R", encoding = "UTF-8")
-sourcepath<-"../../ADCR/adcrtest2/secrad.r"
+sourcepath<-"adcrsgd/secrad.r" 
 source(sourcepath, encoding = "UTF-8")
 
 # # テストデータ作成コード ( 列=個体, 行=調査) -----------------------------------------
