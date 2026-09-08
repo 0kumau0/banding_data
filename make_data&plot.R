@@ -234,7 +234,7 @@ grid_cov_std <- grid_cov_std %>%
 dataset$grid_cov_std <- grid_cov_std
 
 # 標準化の際に使用した平均と標準偏差を保存
-dataset$grid_cov_musd <- data.frame(mu = c(mu_agri, mu_wtr),
+dataset$grid_cov_std <- data.frame(mu = c(mu_agri, mu_wtr),
                                     sd = c(sd_agri, sd_wtr))
 
 # 最小隣接セル間距離をリストとしてまとめる
@@ -297,7 +297,9 @@ initpar<-generate_init(secrad_obj)
 initpar["dens_0"]<--1
 initpar["conn_0"]<--2
 initpar["g0_1"]<--5
+system.time(
 secrad_res<-optim(initpar,secrad_obj$loglf,method="BFGS",control=list(maxit=1000,trace=2),loglfscale=-1,verbose=T,hessian=T)
+)
 
 # Plotting data -----------------------------------------------------------
 Japan <- st_read("S:\\common\\personal_backup\\kumada\\Virbsagi\\R\\Japan_merge2.shp")
