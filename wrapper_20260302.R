@@ -152,32 +152,17 @@ create_subset_secrad <- function(original_secrdata, ids, model_settings) {
 
 # 2. SGD用ラッパー尤度関数
 ## SGD用：loglf(sgd=TRUE) のパーツを使う目的関数
-wrapper_sgd_loglf <- function(par,
-                              ids_multi,
-                              ids_single,
-                              sampling_rate,
-                              original_secrdata,
-                              model_settings,
-                              verbose = FALSE) {
-  
-  ## 複数回捕獲個体のオブジェクト
-  obj_multi <- create_subset_secrad(
-    original_secrdata = original_secrdata,
-    ids = ids_multi,
-    model_settings = model_settings
-  )
+wrapper_sgd_loglf_fast <- function(par,
+                                   obj_multi,
+                                   obj_single,
+                                   n_detected,
+                                   sampling_rate,
+                                   verbose = FALSE) {
   
   out_multi <- obj_multi$loglf(
     par,
     loglfscale = 1,
     sgd = TRUE
-  )
-  
-  ## 単回捕獲個体のオブジェクト
-  obj_single <- create_subset_secrad(
-    original_secrdata = original_secrdata,
-    ids = ids_single,
-    model_settings = model_settings
   )
   
   out_single <- obj_single$loglf(
@@ -186,20 +171,14 @@ wrapper_sgd_loglf <- function(par,
     sgd = TRUE
   )
   
-  ## 実際に検出された個体数 n
-  ## 今回のモデルでは indmodel が FALSE なので scalar でよい
-  n_detected <- original_secrdata$nind
-  
-  ## 少なくとも1回検出された個体数の Poisson process 尤度
   ll_pois <- dpois(
     x = n_detected,
     lambda = exp(out_multi$lambda_grp),
     log = TRUE
   )
   
-  ## 捕獲履歴部分
-  ## 複数回個体は全使用、単回個体は sampling_rate で補正
-  ll_ch <- out_multi$loglfmulti + out_single$loglfmulti / sampling_rate
+  ll_ch <- out_multi$loglfmulti +
+    out_single$loglfmulti / sampling_rate
   
   res <- sum(ll_pois) + ll_ch
   
@@ -233,6 +212,8 @@ current_model_settings <- list(
 sampling_rate <- 1.0
 sample_size <- max(1, floor(length(single_ids) * sampling_rate))
 
+n_detected <- secrdata_test$nind
+
 ## 初期値
 initpar_test <- generate_init(secrad_obj)
 initpar_test["dens_0"]<--1
@@ -249,83 +230,340 @@ current_par <- initpar_test
 
 ## 学習設定
 learning_rate <- 0.01
-max_iter <- 500
+max_iter <- 5
 
 trace_par <- matrix(NA, nrow = max_iter, ncol = length(current_par))
 colnames(trace_par) <- names(current_par)
 
 trace_ll <- rep(NA, max_iter)
 
-cat("--- SGD Optimization using sgd=TRUE parts Started ---\n")
+obj_multi_fixed <- create_subset_secrad(
+  original_secrdata = secrdata_test,
+  ids = multi_ids,
+  model_settings = current_model_settings
+)
 
-system.time(
+n_detected <- secrdata_test$nind
+
+# cat("--- SGD Optimization using prebuilt objects Started ---\n")
+# 
+# system.time(
+#   for (iter in 1:max_iter) {
+#     
+#     ## 単回捕獲個体のサンプリング
+#     if (length(single_ids) > sample_size) {
+#       current_single_sample <- sample(single_ids, size = sample_size)
+#     } else {
+#       current_single_sample <- single_ids
+#     }
+#     
+#     ## この iteration で使う単回個体オブジェクトを1回だけ作る
+#     obj_single_iter <- create_subset_secrad(
+#       original_secrdata = secrdata_test,
+#       ids = current_single_sample,
+#       model_settings = current_model_settings
+#     )
+#     
+#     ## この iteration 内で固定する目的関数
+#     objfun_iter <- function(p) {
+#       names(p) <- names(current_par)
+#       
+#       wrapper_sgd_loglf_fast(
+#         par = p,
+#         obj_multi = obj_multi_fixed,
+#         obj_single = obj_single_iter,
+#         n_detected = n_detected,
+#         sampling_rate = sampling_rate,
+#         verbose = FALSE
+#       )
+#     }
+#     
+#     ## 勾配計算
+#     g <- tryCatch({
+#       numDeriv::grad(
+#         func = objfun_iter,
+#         x = current_par
+#       )
+#     }, error = function(e) {
+#       cat(sprintf("\n[Error] Iter %d で勾配計算エラー: %s\n", iter, e$message))
+#       return(rep(NA, length(current_par)))
+#     })
+#     
+#     if (any(is.na(g)) || any(!is.finite(g))) {
+#       cat("勾配が NA または Inf になったため、SGDを停止します。\n")
+#       break
+#     }
+#     
+#     ## 対数尤度を最大化するので + 方向に更新
+#     current_lr <- learning_rate / (1 + 0.01 * iter)
+#     current_par <- current_par + current_lr * g
+#     
+#     trace_par[iter, ] <- current_par
+#     
+#     ## モニタリング
+#     if (iter %% 50 == 0 || iter == 1) {
+#       curr_ll <- objfun_iter(current_par)
+#       trace_ll[iter] <- curr_ll
+#       
+#       cat(sprintf(
+#         "Iter: %3d, LR: %.5f, SGD objective: %.6f\n",
+#         iter, current_lr, curr_ll
+#       ))
+#     }
+#   }
+# )
+# 
+# cat("--- SGD Completed ---\n")
+
+
+
+#  Adam-SGD  --------------------------------------------------------------
+# Adam-SGD 用の準備
+capture_counts <- colSums(dataset_test$detect)
+multi_ids <- which(capture_counts > 1)
+single_ids <- which(capture_counts == 1)
+
+current_model_settings <- list(
+  envmodel = list(D ~ 1, C ~ agri + wtr, A ~ 0),
+  indmodel = c(A = FALSE, g0 = FALSE),
+  occmodel = c(A = FALSE, g0 = FALSE)
+)
+
+sampling_rate <- 0.2
+sample_size <- max(1, floor(length(single_ids) * sampling_rate))
+
+is_full_sampling <- isTRUE(all.equal(sampling_rate, 1.0))
+
+n_detected <- secrdata_test$nind
+
+# 固定できる secrad オブジェクトを作る
+obj_multi_fixed <- create_subset_secrad(
+  original_secrdata = secrdata_test,
+  ids = multi_ids,
+  model_settings = current_model_settings
+)
+
+if (is_full_sampling) {
+  obj_single_fixed <- create_subset_secrad(
+    original_secrdata = secrdata_test,
+    ids = single_ids,
+    model_settings = current_model_settings
+  )
+} else {
+  obj_single_fixed <- NULL
+}
+
+make_single_obj <- function(ids) {
+  create_subset_secrad(
+    original_secrdata = secrdata_test,
+    ids = ids,
+    model_settings = current_model_settings
+  )
+}
+
+get_single_obj <- function(ids) {
+  if (is_full_sampling) {
+    return(obj_single_fixed)
+  } else {
+    return(make_single_obj(ids))
+  }
+}
+
+# 初期値と記録用オブジェクト
+initpar_test <- generate_init(secrad_obj)
+
+initpar_test["dens_0"] <- -1
+initpar_test["conn_0"] <- -2
+initpar_test["g0_1"] <- -5
+
+current_par <- initpar_test
+
+max_iter <- 2000
+
+trace_par <- matrix(NA, nrow = max_iter, ncol = length(current_par))
+colnames(trace_par) <- names(current_par)
+
+trace_ll <- rep(NA, max_iter)
+
+trace_grad <- matrix(NA, nrow = max_iter, ncol = length(current_par))
+colnames(trace_grad) <- names(current_par)
+
+trace_step <- matrix(NA, nrow = max_iter, ncol = length(current_par))
+colnames(trace_step) <- names(current_par)
+
+# Adam 設定
+alpha <- 0.01
+beta1 <- 0.9
+beta2 <- 0.999
+eps_adam <- 1e-8
+alpha_vec <- rep(0.05, length(current_par))
+names(alpha_vec) <- names(current_par)
+
+alpha_vec["dens_0"] <- 0.03
+alpha_vec["conn_0"] <- 0.05
+alpha_vec["conn_agri"] <- 0.05
+alpha_vec["conn_wtr"] <- 0.05
+alpha_vec["g0_1"] <- 0.05
+
+m <- rep(0, length(current_par))
+v <- rep(0, length(current_par))
+names(m) <- names(current_par)
+names(v) <- names(current_par)
+
+max_step <- rep(0.2, length(current_par))
+names(max_step) <- names(current_par)
+
+max_step["dens_0"] <- 0.05
+max_step["conn_0"] <- 0.10
+max_step["conn_agri"] <- 0.05
+max_step["conn_wtr"] <- 0.05
+max_step["g0_1"] <- 0.05
+
+grad_method <- "simple"
+grad_eps <- 1e-4
+
+# 初期目的関数チェック
+if (is_full_sampling) {
+  current_single_sample <- single_ids
+} else {
+  current_single_sample <- sample(single_ids, size = sample_size)
+}
+
+obj_single_check <- get_single_obj(current_single_sample)
+
+initial_objfun <- function(p) {
+  names(p) <- names(current_par)
+  
+  wrapper_sgd_loglf_fast(
+    par = p,
+    obj_multi = obj_multi_fixed,
+    obj_single = obj_single_check,
+    n_detected = n_detected,
+    sampling_rate = sampling_rate,
+    verbose = FALSE
+  )
+}
+
+initial_ll <- initial_objfun(current_par)
+
+cat("\n[Initial check]\n")
+cat("initial objective:", initial_ll, "\n")
+
+if (is.na(initial_ll) || !is.finite(initial_ll)) {
+  stop("初期値で目的関数が NA または Inf です。")
+}
+
+# Adam-SGD ループ
+cat("--- Adam-SGD Optimization using sgd=TRUE parts Started ---\n")
+
+time_adam_sgd <- system.time(
   for (iter in 1:max_iter) {
     
-    ## 単回捕獲個体のサンプリング
-    if (length(single_ids) > sample_size) {
-      current_single_sample <- sample(single_ids, size = sample_size)
-    } else {
+    # 単回捕獲個体のサンプリング
+    if (is_full_sampling) {
       current_single_sample <- single_ids
+    } else {
+      if (length(single_ids) > sample_size) {
+        current_single_sample <- sample(single_ids, size = sample_size)
+      } else {
+        current_single_sample <- single_ids
+      }
     }
     
-    ## 勾配計算
+    obj_single_iter <- get_single_obj(current_single_sample)
+    
+    # この iteration 内で固定する目的関数
+    # ここが重要：numDeriv::grad() にはこの objfun_iter を渡す
+    objfun_iter <- function(p) {
+      names(p) <- names(current_par)
+      
+      wrapper_sgd_loglf_fast(
+        par = p,
+        obj_multi = obj_multi_fixed,
+        obj_single = obj_single_iter,
+        n_detected = n_detected,
+        sampling_rate = sampling_rate,
+        verbose = FALSE
+      )
+    }
+    
+    # 勾配計算
     g <- tryCatch({
       numDeriv::grad(
-        func = wrapper_sgd_loglf,
+        func = objfun_iter,
         x = current_par,
-        ids_multi = multi_ids,
-        ids_single = current_single_sample,
-        sampling_rate = sampling_rate,
-        original_secrdata = secrdata_test,
-        model_settings = current_model_settings
+        method = grad_method,
+        method.args = list(eps = grad_eps)
       )
     }, error = function(e) {
       cat(sprintf("\n[Error] Iter %d で勾配計算エラー: %s\n", iter, e$message))
       return(rep(NA, length(current_par)))
     })
     
+    names(g) <- names(current_par)
+    
     if (any(is.na(g)) || any(!is.finite(g))) {
-      cat("勾配が NA または Inf になったため、SGDを停止します。\n")
+      cat("勾配が NA または Inf になったため、Adam-SGDを停止します。\n")
       break
     }
     
-    ## 対数尤度を最大化するので + 方向に更新
-    current_lr <- learning_rate / (1 + 0.01 * iter)
-    current_par <- current_par + current_lr * g
+    # Adam更新
+    m <- beta1 * m + (1 - beta1) * g
+    v <- beta2 * v + (1 - beta2) * (g^2)
+    
+    m_hat <- m / (1 - beta1^iter)
+    v_hat <- v / (1 - beta2^iter)
+    
+    step <- alpha_vec * m_hat / (sqrt(v_hat) + eps_adam)
+    
+    # ステップ幅クリッピング
+    step <- pmax(pmin(step, max_step), -max_step)
+    
+    # 対数尤度を最大化するので + 方向
+    current_par <- current_par + step
     
     trace_par[iter, ] <- current_par
+    trace_grad[iter, ] <- g
+    trace_step[iter, ] <- step
     
-    ## モニタリング
-    if (iter %% 50 == 0 || iter == 1) {
-      curr_ll <- wrapper_sgd_loglf(
-        par = current_par,
-        ids_multi = multi_ids,
-        ids_single = current_single_sample,
-        sampling_rate = sampling_rate,
-        original_secrdata = secrdata_test,
-        model_settings = current_model_settings,
-        verbose = FALSE
-      )
-      
-      trace_ll[iter] <- curr_ll
-      
+    curr_ll <- objfun_iter(current_par)
+    trace_ll[iter] <- curr_ll
+    
+    #if (iter %% 10 == 0 || iter == 1) {
       cat(sprintf(
-        "Iter: %3d, LR: %.5f, SGD objective: %.3f\n",
-        iter, current_lr, curr_ll
-      ))
-    }
+      "Iter: %4d, objective: %.8f, max|g|: %.4e, max|step|: %.4e\n",
+      iter,
+      curr_ll,
+      max(abs(g)),
+      max(abs(step))
+    ))
+    
+    print(round(current_par, 5))
+    #}
   }
 )
 
-#cat("--- SGD Completed ---\n")
+cat("--- Adam-SGD Completed ---\n")
+print(time_adam_sgd)
 save(
   secrad_res,
   current_par,
   trace_par,
   trace_ll,
-  file = "SGD_result_20260730.Rdata"
+  trace_grad,
+  trace_step,
+  sampling_rate,
+  sample_size,
+  alpha_vec,
+  beta1,
+  beta2,
+  eps_adam,
+  max_step,
+  grad_method,
+  grad_eps,
+  time_adam_sgd,
+  file = "SGD_Adam_result_202608171730.Rdata"
 )
-
 
 
 
@@ -342,7 +580,7 @@ ll_full <- secrad_obj$loglf(
   loglfscale = 1
 )
 
-ll_sgd_parts <- wrapper_sgd_loglf(
+ll_sgd_parts <- wrapper_sgd_loglf_fast(
   par = par_check,
   ids_multi = multi_ids,
   ids_single = single_ids,
@@ -475,3 +713,135 @@ par(mfrow=c(1,1))
 
 
 
+
+#BFGS refine: all single-capture individuals ---------------------------
+# Adam-SGD の current_par を初期値にして、固定 objective で仕上げる
+
+
+# 念のためパラメータ名を確認
+print(current_par)
+
+# 複数回捕獲個体オブジェクト
+# 既に obj_multi_fixed があるなら再作成不要
+if (!exists("obj_multi_fixed")) {
+  obj_multi_fixed <- create_subset_secrad(
+    original_secrdata = secrdata_test,
+    ids = multi_ids,
+    model_settings = current_model_settings
+  )
+}
+
+# 単回捕獲個体を全て使う固定オブジェクト
+obj_single_all <- create_subset_secrad(
+  original_secrdata = secrdata_test,
+  ids = single_ids,
+  model_settings = current_model_settings
+)
+
+# 総検出個体数
+n_detected <- secrdata_test$nind
+
+# BFGS 用の負の objective
+# optim は最小化なので、SGD parts objective にマイナスを付ける
+objfun_refine_neg <- function(p) {
+  names(p) <- names(current_par)
+  
+  -wrapper_sgd_loglf_fast(
+    par = p,
+    obj_multi = obj_multi_fixed,
+    obj_single = obj_single_all,
+    n_detected = n_detected,
+    sampling_rate = 1.0,
+    verbose = FALSE
+  )
+}
+
+# refine 前の objective
+obj_before_refine <- -objfun_refine_neg(current_par)
+
+cat("\n[Before BFGS refine]\n")
+cat("objective:", obj_before_refine, "\n")
+print(current_par)
+
+# BFGS refine
+time_refine <- system.time({
+  res_refine_sgdobj <- optim(
+    par = current_par,
+    fn = objfun_refine_neg,
+    method = "BFGS",
+    control = list(
+      maxit = 500,
+      trace = 1,
+      REPORT = 1
+    ),
+    hessian = FALSE
+  )
+})
+
+cat("\n--- BFGS refine completed ---\n")
+print(time_refine)
+
+# refine 後の objective
+obj_after_refine <- -res_refine_sgdobj$value
+
+cat("\n[After BFGS refine]\n")
+cat("objective:", obj_after_refine, "\n")
+print(res_refine_sgdobj$par)
+
+cat("\n[Improvement]\n")
+cat("before:", obj_before_refine, "\n")
+cat("after :", obj_after_refine, "\n")
+cat("gain  :", obj_after_refine - obj_before_refine, "\n")
+
+# 結果を current_par_refined として保存
+current_par_refined <- res_refine_sgdobj$par
+
+
+
+# optim 解との比較 -------------------------------------------------------------
+
+if (exists("secrad_res")) {
+  cat("\n[Comparison with full optim]\n")
+  
+  comp_refine <- cbind(
+    optim_full = secrad_res$par[names(current_par_refined)],
+    adam_sgd = current_par[names(current_par_refined)],
+    bfgs_refined = current_par_refined,
+    diff_refined = current_par_refined - secrad_res$par[names(current_par_refined)]
+  )
+  
+  print(comp_refine)
+  
+  # objective 比較
+  obj_at_optim <- wrapper_sgd_loglf_fast(
+    par = secrad_res$par,
+    obj_multi = obj_multi_fixed,
+    obj_single = obj_single_all,
+    n_detected = n_detected,
+    sampling_rate = 1.0,
+    verbose = FALSE
+  )
+  
+  obj_at_adam <- wrapper_sgd_loglf_fast(
+    par = current_par,
+    obj_multi = obj_multi_fixed,
+    obj_single = obj_single_all,
+    n_detected = n_detected,
+    sampling_rate = 1.0,
+    verbose = FALSE
+  )
+  
+  obj_at_refined <- wrapper_sgd_loglf_fast(
+    par = current_par_refined,
+    obj_multi = obj_multi_fixed,
+    obj_single = obj_single_all,
+    n_detected = n_detected,
+    sampling_rate = 1.0,
+    verbose = FALSE
+  )
+  
+  cat("\n[Objective comparison under SGD-parts objective]\n")
+  cat("at full optim par :", obj_at_optim, "\n")
+  cat("at Adam-SGD par   :", obj_at_adam, "\n")
+  cat("after BFGS refine :", obj_at_refined, "\n")
+}

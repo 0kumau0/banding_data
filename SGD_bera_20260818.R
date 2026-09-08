@@ -16,7 +16,7 @@ effort<-read_csv("../../ADCR/doi_10_5061_dryad_ksn02v7bq__v20250117/effort_23122
 effort_st<-effort%>%st_as_sf(coords=c("x","y"),crs=3100)
 
 detect<-read_csv("../../ADCR/doi_10_5061_dryad_ksn02v7bq__v20250117/detectmat_231225.csv")
-tes
+
 
 # set data -----------------------------------------------------------
 # read griddata 
