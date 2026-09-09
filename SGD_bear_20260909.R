@@ -26,9 +26,30 @@
 # 実害は推定値ではなく最適化の幾何に出る。sd(wtr) = 0.0724 と小さいので、
 # 同じ効果を表すのに conn_wtr は 1/0.0724 ≒ 14 倍の大きさを持つ必要がある。
 # 実際 optim 解は conn_agri = 0.361 に対し conn_wtr = -6.411 だった。
-# Adam は係数ごとにステップ幅を切る（max_step = 0.05）ので、初期値 -1 から
-# -6.4 まで動かすだけで最低 108 反復かかる。1反復 2200 秒なので約3日。
-# 531 反復かけてもまだ届いていなかった。
+#
+# Adam の1反復あたりの移動は高々 alpha（0.02〜0.03）なので、初期値 -1 から
+# -6.4 まで 5.41 も動くには 300 反復ほどかかる。1反復 2200 秒なので約1週間。
+# 標準化すればこの距離が 0 -> -0.464 の 0.46 に縮む（約12分の1）。
+#
+# 旧実行のトレース（630反復）を解析して分かった注意点が2つある。
+#
+#   - **max_step は一度も効いていない**（全係数で 0 回）。効いている上限は alpha。
+#   - **conn_wtr は1反復あたりではむしろ最も速く動いていた**（|step|/alpha が
+#     全係数中で最大）。遅かったのは距離が長かったからで、勾配が
+#     ノイズに埋もれていたわけではない（終盤でも符号一致率 100%）。
+#
+# したがって **標準化の修正だけで劇的に速くなるわけではない。** 初期値 -5 から
+# 解 -1.79 まで 3.21 動く必要のある g0_1 が、~230 反復のボトルネックとして残る。
+# 見込める短縮は 300 反復前後 -> 230 反復前後、2〜3割。
+# 標準化を直す本当の価値は、係数ごとの alpha / max_step の手調整が要らなくなること、
+# および係数が解釈可能なスケールになることのほう。
+#
+# もう一点。旧実行では 451 反復以降、**勾配の符号が一貫しているのにステップが
+# alpha の 1/1000 まで落ちていた。**「収束して止まった」のではなく
+# 「動けなくなって止まった」。beta2 = 0.999 の v が序盤の大きな勾配を
+# 1000反復規模の記憶として保持し、後半のステップを抑え込むため。
+# **良い初期値から始めるとこれが起きにくい**（序盤に大きな勾配が出ないので）。
+# INIT_MODE = "transformed" が本番向きなのはそのため。
 #
 # BFGS は逆ヘッセ近似がスケール差を吸収するので、本家の optim 解析では
 # この問題は表に出ない。Adam でだけ致命的になる。
@@ -46,6 +67,34 @@
 #
 # 2 が通れば「標準化の修正は厳密な再パラメータ化であって、モデルは
 # 変わっていない」ことが確定する。数日かけて回す前にここで止まれる。
+#
+# ---------------------------------------------------------------------------
+# 推奨手順（既定値はこの「第1段」になっている）
+# ---------------------------------------------------------------------------
+#
+# チェックポイントがあるので **MAX_ITER を先に決め打ちする必要はない。**
+# 少なく回して様子を見てから増やせばよく、再実行すれば続きから走る。
+#
+#   第1段（既定。数時間〜半日）
+#     INIT_MODE = "transformed", MAX_ITER = 20
+#     → 対数尤度の照合、BFGS 参照解、1反復あたりの実測時間が得られる。
+#       さらに「最適点に置いた Adam がそこに留まるか」の安定性確認になる。
+#       ここで全部の前提が確かめられる。
+#
+#   第2段（第1段の実測時間を見てから決める）
+#     MAX_ITER を増やして同じコマンドを再実行 → 続きから走る
+#
+#   第3段（収束の実証をしたい場合。数日〜1週間）
+#     INIT_MODE = "far", MAX_ITER = 250 程度
+#     → 遠い初期値から解にたどり着けることを示す run。
+#       チェックポイントと結果のファイル名に INIT_MODE が入るので、
+#       第1〜2段の結果とは別物として並存する。
+#
+# sampling_rate は 1.0 のままでよい。合成データでの検証（Step 1、
+# reports/sampling_report.md）で、**下げても BFGS 解には届くが速度は
+# ほとんど変わらない**（rate 1.0 → 0.1 で 4.4%）ことが分かっている。
+# 下げる価値があるのは実データでの再現性を確認したいときだけで、
+# その場合も標準化の修正とは別の run にすること（2つ同時に変えない）。
 # ---------------------------------------------------------------------------
 
 
@@ -62,11 +111,13 @@ UTILPATH   <- "adcrsgd/sgd_utils.R"    # advdiff キャッシュ共有と順序�
 BEAR_DIR <- "../../ADCR/doi_10_5061_dryad_ksn02v7bq__v20250117"
 
 ## --- 出力 -----------------------------------------------------------------
+# チェックポイントと結果のファイル名には INIT_MODE を入れる。
+# 初期値を変えたのに前の途中経過から再開してしまう事故を防ぐため。
+# BFGS 参照解は初期値に依存しないので共通。
 TAG        <- "SGD_bear_20260909"
 OPTIM_FILE <- paste0(TAG, "_optim.rds")       # BFGS 参照解（一度作れば再利用）
-CKPT_FILE  <- paste0(TAG, "_checkpoint.rds")  # Adam の途中経過
-RESULT_FILE<- paste0(TAG, "_result.RData")    # 最終結果
 LOG_FILE   <- paste0(TAG, "_log.txt")
+# CKPT_FILE と RESULT_FILE は INIT_MODE 確定後に組み立てる（下の「1. 準備」）
 
 ## --- 実行する段階 ----------------------------------------------------------
 RUN_CHECK <- TRUE     # 2. 旧解との照合。安いので必ず通すこと
@@ -87,8 +138,13 @@ CHECK_TOL <- 0.1
 OPTIM_MAXIT <- 200
 
 ## --- Adam ------------------------------------------------------------------
-MAX_ITER        <- 300     # 到達目標の総反復数（再開時もこの数まで回す）
-SAMPLING_RATE   <- 1.0     # 1.0 で単回捕獲個体も全件使う
+# 到達目標の総反復数。再開すればこの数まで回すので、**先に決め打ちしなくてよい。**
+# まず 20 で回して1反復あたりの時間を見てから増やすこと（冒頭の「推奨手順」）。
+MAX_ITER        <- 20
+
+# 1.0 で単回捕獲個体も全件使う（＝完全バッチ）。下げても速くならないので
+# このままでよい。理由は冒頭の「推奨手順」を参照。
+SAMPLING_RATE   <- 1.0
 CHECKPOINT_EVERY<- 5       # 何反復ごとに保存するか。1反復が長いので短めに
 REPORT_EVERY    <- 1
 
@@ -104,9 +160,21 @@ MAX_STEP_BY_PAR  <- c(conn_0 = 0.10)
 
 ## --- 初期値 ---------------------------------------------------------------
 #
-#   "far"         … 真値から離れた点から出発する。収束の検証用（旧コードと同じ置き方）
-#   "transformed" … 旧解を変換した点。既に最適解なので本番向き
-INIT_MODE <- "far"
+#   "transformed" … 旧解を変換した点（＝既に最適解）。**まずはこちら。**
+#                   序盤に大きな勾配が出ないので Adam の v が膨らまず、
+#                   旧実行で起きた終盤の失速を避けられる。
+#                   ただし「1反復で終わる」わけではない。Adam のステップは
+#                   alpha * m/sqrt(v) で、最適点でも m/sqrt(v) は 1 程度に
+#                   正規化されるため、alpha (0.02〜0.03) 程度の幅で
+#                   解の周りを揺れ動く。20〜30 反復回して、その揺れが
+#                   小さく収まっているかを見るのが目的。
+#
+#   "far"         … 遠い点から出発する。収束の実証用（旧コードと同じ置き方）。
+#                   g0_1 が -5 から -1.79 まで動く必要があり、1反復あたり
+#                   高々 alpha=0.02 なので 230 反復程度かかる。
+#
+# チェックポイントと結果のファイル名にこの値が入るので、両方を並存させられる。
+INIT_MODE <- "transformed"
 
 INIT_FAR <- c(dens_0 = -1, conn_0 = -2, conn_agri = 0, conn_wtr = 0, g0_1 = -5)
 
@@ -127,6 +195,8 @@ OLD_LOGLIK <- -685.5202223
 
 t_start <- Sys.time()
 
+stopifnot(INIT_MODE %in% c("far", "transformed"))
+
 # DRY_RUN の上書きは sink より前に済ませる。出力ファイル名を別にして
 # 本番の結果とログを上書きしないため。
 if (DRY_RUN) {
@@ -137,11 +207,12 @@ if (DRY_RUN) {
   CHECKPOINT_EVERY <- 2L
   OPTIM_MAXIT <- 10L
   TAG <- paste0(TAG, "_dryrun")
-  OPTIM_FILE  <- paste0(TAG, "_optim.rds")
-  CKPT_FILE   <- paste0(TAG, "_checkpoint.rds")
-  RESULT_FILE <- paste0(TAG, "_result.RData")
-  LOG_FILE    <- paste0(TAG, "_log.txt")
+  OPTIM_FILE <- paste0(TAG, "_optim.rds")
+  LOG_FILE   <- paste0(TAG, "_log.txt")
 }
+
+CKPT_FILE   <- paste0(TAG, "_", INIT_MODE, "_checkpoint.rds")
+RESULT_FILE <- paste0(TAG, "_", INIT_MODE, "_result.RData")
 
 # 画面と LOG_FILE の両方に出す。数日かかるので記録が残らないと追えない。
 # sink が拾うのは標準出力だけ。警告とエラーは端末にしか出ないので、
@@ -505,6 +576,10 @@ if (RUN_SGD) {
     ck <- readRDS(CKPT_FILE)
     if (!identical(ck$par_names, PAR_NAMES))
       stop("チェックポイントのパラメータ名が一致しません。CKPT_FILE を消すか確認を。")
+    # ファイル名に INIT_MODE が入っているので普通は起きないが、念のため。
+    if (!is.null(ck$init_mode) && !identical(ck$init_mode, INIT_MODE))
+      stop("チェックポイントの INIT_MODE (", ck$init_mode, ") が現在の設定 (",
+           INIT_MODE, ") と違います。別の初期値の途中経過から再開しかけています。")
     current_par <- ck$current_par; m <- ck$m; v <- ck$v
     iter_done <- ck$iter_done
     n <- min(iter_done, MAX_ITER)
@@ -523,7 +598,8 @@ if (RUN_SGD) {
   say("max_step = ", paste(sprintf("%s:%.3f", PAR_NAMES, max_step), collapse = " "))
 
   save_ckpt <- function(iter) {
-    saveRDS(list(par_names = PAR_NAMES, current_par = current_par, m = m, v = v,
+    saveRDS(list(par_names = PAR_NAMES, init_mode = INIT_MODE,
+                 current_par = current_par, m = m, v = v,
                  iter_done = iter, trace_par = trace_par, trace_grad = trace_grad,
                  trace_step = trace_step, trace_ll = trace_ll,
                  sampling_rate = SAMPLING_RATE, alpha_vec = alpha_vec,
