@@ -1,0 +1,14 @@
+"kind","ncell","nind","sec"
+"loglf_cold",900,5,1.98
+"loglf_cold",900,25,1.09
+"loglf_cold",900,50,1.19
+"loglf_cold",900,100,1.39999999999999
+"loglf_cold",900,200,1.56
+"loglf_cold",900,261,1.55
+"advdiff_only",900,NA,0.530000000000001
+"advdiff_only",100,NA,0
+"advdiff_only",400,NA,0.11999999999999
+"advdiff_only",900,NA,0.519999999999996
+"advdiff_only",1600,NA,2.09
+"advdiff_only",2500,NA,7.45999999999998
+"advdiff_only",3600,NA,18.04

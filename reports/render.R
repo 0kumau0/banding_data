@@ -2,8 +2,9 @@
 #
 # レポートを Obsidian で読める Markdown として書き出す。
 #
-#   Rscript reports/render.R          # Markdown のみ
-#   Rscript reports/render.R --html   # HTML も併せて出す
+#   Rscript reports/render.R                    # 既定のレポート（adcr_sgd_report）
+#   Rscript reports/render.R sampling_report    # レポート名を指定
+#   Rscript reports/render.R --html             # HTML も併せて出す
 #
 # 素の rmarkdown::render() だと .md の YAML に output: ブロックがそのまま残り、
 # Obsidian のプロパティ欄が rmarkdown の設定で埋まってしまう。
@@ -11,14 +12,18 @@
 # だけが残るようにしている。
 # ---------------------------------------------------------------------------
 
-RMD <- "reports/adcr_sgd_report.Rmd"
-MD  <- "reports/adcr_sgd_report.md"
+args      <- commandArgs(trailingOnly = TRUE)
+want_html <- "--html" %in% args
+target    <- setdiff(args, "--html")
+target    <- if (length(target)) target[1] else "adcr_sgd_report"
+
+RMD <- file.path("reports", paste0(target, ".Rmd"))
+MD  <- file.path("reports", paste0(target, ".md"))
 
 if (!file.exists(RMD)) {
-  stop("リポジトリルート（git/banding_data）で実行してください。現在: ", getwd())
+  stop("見つかりません: ", RMD,
+       "\nリポジトリルート（Claude/banding_data）で実行してください。現在: ", getwd())
 }
-
-want_html <- "--html" %in% commandArgs(trailingOnly = TRUE)
 
 cat("Markdown を生成中 ...\n")
 rmarkdown::render(RMD, output_format = "md_document", quiet = TRUE)
@@ -54,5 +59,5 @@ cat(sprintf("図  : %d 枚 / reports/figures/\n", length(figs)))
 if (want_html) {
   cat("\nHTML を生成中 ...\n")
   rmarkdown::render(RMD, output_format = "html_document", quiet = TRUE)
-  cat("出力: reports/adcr_sgd_report.html\n")
+  cat(sprintf("出力: reports/%s.html\n", target))
 }

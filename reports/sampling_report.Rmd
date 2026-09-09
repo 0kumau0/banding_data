@@ -1,0 +1,471 @@
+---
+title: "SGD のミニバッチ検証"
+subtitle: "sampling_rate を下げても BFGS 解に到達するか（合成データ）"
+date: 2026-09-09
+tags:
+  - ADCR
+  - secrad
+  - SGD
+  - 検証
+  - sampling_rate
+output:
+  md_document:
+    variant: gfm
+    preserve_yaml: true
+    toc: false
+    df_print: kable
+    md_extensions: "-implicit_figures"
+    fig_width: 9
+    fig_height: 5
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float:
+      collapsed: false
+    toc_depth: 2
+    self_contained: true
+    df_print: kable
+    fig_width: 9
+    fig_height: 5
+---
+
+```{r setup, include=FALSE}
+# 作業ディレクトリはこの .Rmd がある reports/ のまま。CSV は ../results/ を見る。
+# fig.path に接頭辞を付けて adcr_sgd_report の図と衝突しないようにする。
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,
+                      dpi = 110, fig.path = "figures/samp-")
+```
+
+```{r libs}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(patchwork)
+library(knitr)
+
+# sampling_rate は「量」であって「種類」ではないので、系列色は
+# カテゴリカルではなく blue の順序ランプを使う（dataviz references/palette.md）。
+# light 面では step 250 (#86b6ef) より明るくしないこと、と明記されている。
+# 250 / 400 / 550 / 700 を採る。
+# 注: このPCに Node が無く validate_palette.js は実行できていない。
+# 文書化済みランプのステップをそのまま使うことで担保している。
+RAMP <- c("#86b6ef", "#3987e5", "#1c5cab", "#0d366b")
+
+# 条件の種類（定数 / 減衰 / 平均）を並べるところだけはカテゴリカル。
+# adcr_sgd_report.Rmd と同じスロット 1-3。
+COL_CAT   <- c("#2a78d6", "#eb6834", "#1baf7a")
+COL_REF   <- "#41403d"   # BFGS 参照解（テキスト色。系列ではないので ink で描く）
+COL_TRUE  <- "#8c8b87"
+
+# 図の中の文字は ASCII に統一している。Windows の R では日本語フォントの
+# 埋め込みが環境依存で豆腐になりやすい。
+theme_set(
+  theme_minimal(base_size = 11) +
+    theme(panel.grid.minor = element_blank(),
+          panel.grid.major = element_line(linewidth = 0.3, colour = "grey88"),
+          strip.text       = element_text(face = "bold", hjust = 0, size = 10.5),
+          plot.title       = element_text(face = "bold", size = 12),
+          plot.subtitle    = element_text(colour = "grey35", size = 10),
+          axis.title       = element_text(size = 9.5, colour = "grey30"),
+          legend.position  = "top",
+          legend.title     = element_blank())
+)
+```
+
+```{r load}
+LABELS <- c("r100_const", "r050_const", "r020_const", "r010_const",
+            "r020_decay", "r010_decay", "r020_polyak")
+
+need <- c(setNames(sprintf("../results/sampling_summary_%s.csv", LABELS),
+                   paste0("s_", LABELS)),
+          setNames(sprintf("../results/sampling_trace_%s.csv", LABELS),
+                   paste0("t_", LABELS)),
+          bench = "../results/scaling_bench.csv")
+
+missing <- need[!file.exists(need)]
+if (length(missing)) {
+  stop("必要な結果ファイルがありません:\n  ", paste(missing, collapse = "\n  "),
+       "\n先に以下を実行してください:\n",
+       "  Rscript examples/adcr_sgd_sampling.R gen\n",
+       "  Rscript examples/adcr_sgd_sampling.R run <label>   # 全 label 分\n",
+       "作業ディレクトリ: ", getwd())
+}
+
+summ <- bind_rows(lapply(LABELS, function(L)
+  read.csv(sprintf("../results/sampling_summary_%s.csv", L))))
+trace <- bind_rows(lapply(LABELS, function(L)
+  transform(read.csv(sprintf("../results/sampling_trace_%s.csv", L)), label = L)))
+bench <- read.csv("../results/scaling_bench.csv")
+
+PARS <- c("dens_0", "conn_0", "conn_X1", "conn_X2", "g0_1")
+PAR_DESC <- c(dens_0  = "密度 log D の切片",
+              conn_0  = "連結性 log C の切片",
+              conn_X1 = "連結性の共変量 X1",
+              conn_X2 = "連結性の共変量 X2",
+              g0_1    = "検出 log g0")
+
+# 第1バッチ（5条件を同時・OMP_NUM_THREADS=3）と第2バッチ（2条件・6スレッド）は
+# 並列度が違うので、秒/iter を跨いで比べてはいけない。
+BATCH1 <- c("r100_const", "r050_const", "r020_const", "r020_decay", "r010_decay")
+BATCH2 <- c("r010_const", "r020_polyak")
+
+# 条件ごとに1行へ畳む（summary は係数ごとに1行なので）
+cond <- summ %>%
+  group_by(label) %>%
+  summarise(rate = first(rate), decay_tau = first(decay_tau),
+            polyak_from = first(polyak_from), iter = first(iter),
+            sec_per_iter = first(sec) / first(iter),
+            ll_bfgs = first(ll_bfgs), ll_sgd = first(ll_sgd),
+            ll_polyak = first(ll_polyak),
+            maxerr_sgd = max(abs(sgd - bfgs)),
+            maxerr_polyak = if (all(is.na(polyak))) NA_real_ else max(abs(polyak - bfgs)),
+            .groups = "drop") %>%
+  mutate(batch = ifelse(label %in% BATCH1, 1L, 2L)) %>%
+  arrange(match(label, LABELS))
+
+bfgs_par <- summ %>% filter(label == "r100_const") %>% select(par, bfgs, true)
+LL_BFGS  <- cond$ll_bfgs[1]
+
+CONST <- c("r100_const", "r050_const", "r020_const", "r010_const")
+rate_lab <- function(x) sprintf("rate %.2f", x)
+```
+
+```{r env}
+git_out <- function(args) {
+  tryCatch(system2("git", args, stdout = TRUE, stderr = FALSE),
+           warning = function(e) character(0), error = function(e) character(0))
+}
+commit <- git_out(c("rev-parse", "--short", "HEAD"))
+commit <- if (length(commit)) commit[1] else "(不明)"
+dirty  <- length(git_out(c("status", "--porcelain"))) > 0
+if (dirty) commit <- paste0(commit, "（未コミットの変更あり）")
+branch <- git_out(c("rev-parse", "--abbrev-ref", "HEAD"))
+branch <- if (length(branch)) branch[1] else "(不明)"
+```
+
+## この文書について
+
+クマ実データでの Adam-SGD は `sampling_rate = 1` のまま回してきた。単回捕獲個体も
+毎回すべて使っているので、**厳密には確率的勾配法になっていない**。実データは
+1反復あたり約2200秒かかり試行錯誤ができないので、**合成データで sampling_rate を
+下げた場合に BFGS 解へ到達するかを先に確かめた**のがこの文書。
+
+数値と図はすべて `results/` 以下の実測 CSV から読んでいる。再生成はリポジトリルート
+（`Claude/banding_data`）で次を実行してから knit する。
+
+```
+Rscript examples/adcr_sgd_sampling.R gen
+Rscript examples/adcr_sgd_sampling.R run r100_const     # 以下 7 条件ぶん
+Rscript reports/render.R sampling_report
+```
+
+| | |
+|---|---|
+| Commit | `` `r commit` `` |
+| Branch | `` `r branch` `` |
+| R | `` `r paste(R.version$major, R.version$minor, sep = ".")` `` |
+
+## 実装
+
+`examples/adcr_sgd_sampling.R`。`gen` と `run` の2モードに分かれている。
+
+**`gen` を分けてあるのは必須の作り。** `secrad_data$simulate()` は `set.seed()` で
+再現しない（C++ の `advdiff_t_core` が `std::random_device` で独自に乱数を初期化する。
+`tests/repro_check.R` 参照）。条件ごとにデータを作り直すと、比べているのが
+sampling_rate の差なのかデータの差なのか分からなくなる。そこで **`gen` で
+合成データと BFGS 参照解を一度だけ作って `results/sampling_dataset.RData` に固定し、
+全条件がそれを読む**。
+
+目的関数の合成は既存実装（`SGD_bera_20260818.R`）と同じ:
+
+```r
+sgd_loglik <- function(p, obj_multi, obj_single, n_detected, rate) {
+  om <- obj_multi$loglf(p,  loglfscale = 1, sgd = TRUE)
+  os <- obj_single$loglf(p, loglfscale = 1, sgd = TRUE)
+  sum(dpois(n_detected, lambda = exp(om$lambda_grp), log = TRUE)) +
+    om$loglfmulti + os$loglfmulti / rate
+}
+```
+
+**複数回捕獲個体（`obj_multi`）は毎反復すべて使い、単回捕獲個体だけをサンプリングして
+`1/rate` で重みを戻す。** これで全データ尤度の不偏推定になる。
+
+実装上の要点が3つある。
+
+- **1反復のミニバッチ内では同じ部分集合で有限差分を取る**（共通乱数）。
+  `objfun` を反復の頭で1回だけ作り、`numDeriv::grad` の全評価がそれを使う。
+  ここを評価ごとに引き直すと、差分の分子がサンプリングノイズに埋もれて勾配が壊れる
+- **目的関数はミニバッチ値（`ll_batch`）と全データ値（`ll_full`）の両方を記録する。**
+  ミニバッチ値だけ見ていると収束判定ができない。`ll_full` は高いので `EVAL_EVERY` 間隔で取る
+- **学習率とステップ上限は係数ごとに持つ。** 尤度曲面の曲率が係数によって違うため、
+  スカラー1つでは片方が動かず片方が飛ぶ
+
+## 合成データと参照解
+
+```{r datatab}
+data.frame(
+  項目 = c("グリッド", "検出器", "全個体", "検出個体",
+           "うち複数回検出", "うち単回検出", "推定するパラメータ",
+           "BFGS 参照解 logL"),
+  値 = c("20 x 20 = 400 セル", "36 基", "529", "254",
+         "88（毎反復すべて使う）", "166（ここをサンプリングする）",
+         "5（dens_0, conn_0, conn_X1, conn_X2, g0_1）",
+         sprintf("%.4f", LL_BFGS))
+) %>% kable()
+```
+
+連結性の共変量を2本（X1, X2）にして、クマデータの `agri` / `wtr` と同じ構造にしてある。
+**両方とも標準化してある**（クマデータで見つかった `wtr` の標準化漏れは別件として切り分ける）。
+
+セル数を実データ（8497）より小さく取ったのは、条件を7つ回すため。後述のとおり
+**計算コストはセル数で決まる**ので、ここを削らないと実験にならない。
+
+## 結果1: sampling_rate を 0.1 まで下げても BFGS 解に一致する
+
+```{r tab-const}
+cond %>% filter(label %in% CONST) %>%
+  transmute(条件 = label, `sampling_rate` = rate,
+            `BFGS との最大誤差` = round(maxerr_sgd, 4),
+            `logL（全データ）` = round(ll_sgd, 3),
+            `秒/iter` = round(sec_per_iter, 2),
+            バッチ = batch) %>%
+  kable()
+```
+
+BFGS 参照解は logL = `r sprintf("%.4f", LL_BFGS)`。**定数学習率の4条件は到達点が実質同じ。**
+
+決め手は **`rate = 1.0` でも 0.035 の残差が出ていること**。もしサブサンプリングが
+誤差の原因なら rate=1.0 では誤差ゼロになるはずで、そうなっていない。
+つまりこの残差は **200反復では Adam が収束しきっていないだけ**で、
+**サブサンプリングによる追加誤差はほぼゼロ**と読める。
+
+```{r fig-traces, fig.height=6.2, fig.cap="図1. 定数学習率での係数の推移。破線が BFGS 解、点線が真値。sampling_rate を下げても同じ点に収束する。"}
+tr <- trace %>% filter(label %in% CONST) %>%
+  left_join(cond %>% select(label, rate), by = "label") %>%
+  pivot_longer(all_of(PARS), names_to = "par", values_to = "value") %>%
+  mutate(par = factor(par, levels = PARS, labels = PAR_DESC[PARS]),
+         rate_f = factor(rate_lab(rate), levels = rate_lab(c(1.0, 0.5, 0.2, 0.1))))
+
+ref <- bfgs_par %>%
+  mutate(par = factor(par, levels = PARS, labels = PAR_DESC[PARS]))
+
+# 4本はほとんどの係数で完全に重なる（それ自体が結果）。重なりを隠さないよう、
+# 明るい系列を太く、暗い系列を細く描いて下の線が縁として見えるようにする。
+# 線幅は情報を担っておらず、遮蔽を解くためだけのもの。
+LW <- c("rate 1.00" = 1.5, "rate 0.50" = 1.0, "rate 0.20" = 0.65, "rate 0.10" = 0.4)
+
+ggplot(tr, aes(iter, value, colour = rate_f, linewidth = rate_f)) +
+  geom_hline(data = ref, aes(yintercept = true), colour = COL_TRUE,
+             linetype = "dotted", linewidth = 0.5) +
+  geom_hline(data = ref, aes(yintercept = bfgs), colour = COL_REF,
+             linetype = "dashed", linewidth = 0.5) +
+  geom_line() +
+  scale_colour_manual(values = RAMP) +
+  scale_linewidth_manual(values = LW, guide = "none") +
+  facet_wrap(~par, scales = "free_y", ncol = 2) +
+  labs(x = "iteration", y = NULL,
+       title = "Parameter traces by sampling rate (constant learning rate)",
+       subtitle = paste("dashed = BFGS solution, dotted = true value.",
+                        "Traces coincide except on the two connectivity covariates;",
+                        "\nlighter series are drawn thicker so the overlap stays visible."))
+```
+
+到達点の細部は次のとおり。
+
+```{r tab-par}
+summ %>% filter(label %in% CONST) %>%
+  select(label, par, true, bfgs, sgd) %>%
+  pivot_wider(names_from = label, values_from = sgd) %>%
+  mutate(across(where(is.numeric), ~round(.x, 4))) %>%
+  rename(係数 = par, 真値 = true, BFGS = bfgs) %>%
+  kable()
+```
+
+### なぜサブサンプリングしても壊れないのか
+
+**設計がそうなっていたから。** 単回捕獲個体は1個体あたりの情報量が小さい。
+情報量の大きい複数回捕獲個体（88個体）は毎反復すべて使うので、
+間引いている 166 個体は勾配の分散にあまり寄与しない。
+既存の multi / single 分割は、この意味で最初から正しかった。
+
+ノイズ球（終盤50反復での係数のばらつき）は rate とともに素直に広がるが、
+係数の値そのものより1桁以上小さいままで、増加分は連結性の共変量に集中している。
+
+```{r fig-noise, fig.height=3.6, fig.cap="図2. 終盤50反復での係数の標準偏差。sampling_rate を下げるとノイズ球は広がるが、広がるのは主に連結性の共変量。"}
+noise <- trace %>% filter(label %in% CONST, iter > 150) %>%
+  left_join(cond %>% select(label, rate), by = "label") %>%
+  pivot_longer(all_of(PARS), names_to = "par", values_to = "value") %>%
+  group_by(rate, par) %>% summarise(sd = sd(value), .groups = "drop") %>%
+  mutate(par = factor(par, levels = PARS))
+
+# ここで色が担うのは係数の「identity」なのでカテゴリカル。
+# 横軸が sampling_rate（順序）を担っている。スロット 1-5 を順に使う。
+ggplot(noise, aes(factor(rate, levels = c(1.0, 0.5, 0.2, 0.1)), sd, fill = par)) +
+  geom_col(position = position_dodge(width = 0.78), width = 0.7) +
+  scale_fill_manual(values = c("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4")) +
+  labs(x = "sampling_rate", y = "sd over last 50 iterations",
+       title = "Noise ball grows with smaller batches",
+       subtitle = "but stays an order of magnitude below the coefficient values")
+```
+
+## 結果2: ただし速度は買えない
+
+**秒/iter が sampling_rate でほとんど変わらない。**
+
+```{r fig-speed, fig.height=3.2, fig.cap="図3. 1反復あたりの所要時間。バッチを 1/10 にしても 4.4% しか速くならない。"}
+# バッチ1には rate 0.2 が2条件ある（const と decay）。rate で束ねると積み上がるので
+# 条件ごとに1本ずつ描く。学習率スケジュールは loglf の呼び出し回数を変えないので、
+# 計算コストの比較としては const / decay を並べてよい。
+sp <- cond %>% filter(batch == 1L) %>%
+  mutate(disp = sprintf("%.2f\n%s", rate,
+                        ifelse(is.na(decay_tau), "const", "decay")),
+         disp = factor(disp, levels = disp[order(-rate, !is.na(decay_tau))]))
+
+ggplot(sp, aes(disp, sec_per_iter)) +
+  geom_col(fill = "#2a78d6", width = 0.6) +
+  geom_text(aes(label = sprintf("%.2f s", sec_per_iter)), vjust = -0.6,
+            size = 3.4, colour = "#41403d") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(x = "sampling_rate / learning-rate schedule", y = "seconds per iteration",
+       title = "Sampling rate buys almost no speed",
+       subtitle = paste("batch 1 only (5 processes in parallel, OMP_NUM_THREADS=3).",
+                        "\nThe schedule does not change the number of loglf calls,",
+                        "so const and decay are comparable here."))
+```
+
+第1バッチ（5条件を同時に並列実行したので互いに比較できる）で
+**rate 1.0 の 12.90 秒/iter に対し rate 0.1 は 12.33 秒/iter。
+バッチを 1/10 にして 4.4% しか速くならない。**
+
+（第2バッチの2条件は並列度が違うので、秒/iter をバッチを跨いで比べてはいけない。
+上の図は第1バッチだけを使っている。第1バッチには rate 0.2 が2条件あるので
+条件ごとに1本ずつ描いた。学習率スケジュールは `loglf` の呼び出し回数を変えないので、
+計算コストの比較としては const と decay を並べてよい。）
+
+理由は `loglf` のコスト構造にある。支配的な計算は `advdiff.eigen()` が作る
+**ncell × ncell 行列**で、これは**個体数と無関係**。個体数に比例するのは
+`logpcapthist`（ncell × nind）と pdot まわりだけ。
+
+```{r fig-cost, fig.height=3.4, fig.cap="図4. loglf のコストは個体数ではなくセル数で決まる。左: セル数を 900 に固定して個体数を変えた場合。右: advdiff 単体のセル数依存（両対数）。"}
+p1 <- bench %>% filter(kind == "loglf_cold", nind >= 25) %>%
+  ggplot(aes(nind, sec)) +
+  geom_line(colour = "#2a78d6", linewidth = 0.8) +
+  geom_point(colour = "#2a78d6", size = 2.4) +
+  expand_limits(y = 0) +
+  labs(x = "number of individuals", y = "seconds per loglf",
+       title = "Individuals: 10x -> 1.4x", subtitle = "ncell fixed at 900")
+
+p2 <- bench %>% filter(kind == "advdiff_only", sec > 0) %>%
+  distinct(ncell, .keep_all = TRUE) %>%
+  ggplot(aes(ncell, sec)) +
+  geom_line(colour = "#eb6834", linewidth = 0.8) +
+  geom_point(colour = "#eb6834", size = 2.4) +
+  scale_x_log10() + scale_y_log10() +
+  labs(x = "number of cells (log)", y = "seconds (log)",
+       title = "Cells: about O(ncell^2.5)", subtitle = "advdiff.eigen alone")
+
+p1 + p2
+```
+
+クマ実データは **ncell = 8497**。右の図から外挿すると advdiff 1回で約150秒、
+1反復あたり約10回呼ばれるので約1500秒。残りが個体依存部分で、
+観測されている **約2200秒/反復**とよく合う。
+
+**速度は別の手当てが要る。** `obj_multi` と `obj_single` が同じ格子・同じ `cpar` に対する
+advdiff を別々に計算している（キャッシュ `self$adtemp` がオブジェクトごとに独立）ので、
+これを共有すれば約2倍。加えて `numDeriv` の摂動順序を「連結性の係数を後ろにまとめる」
+ように変えるとキャッシュミスが6回中5回から4回に減る。
+
+## 結果3: 減衰と Polyak 平均は「到達してから」でないと害になる
+
+定数学習率の Adam は、理屈のうえでは最適点そのものではなくその周りのノイズ球に
+留まる。そこで学習率減衰と Polyak 平均を試したが、**最初の設定では明確に悪化した。**
+
+```{r tab-decay}
+cond %>% filter(label %in% c("r020_const", "r020_decay", "r020_polyak")) %>%
+  transmute(条件 = label,
+            `減衰 tau` = ifelse(is.na(decay_tau), "なし", as.character(decay_tau)),
+            `平均開始` = ifelse(is.na(polyak_from), "なし", as.character(polyak_from)),
+            `最大誤差(最終値)` = round(maxerr_sgd, 4),
+            `最大誤差(平均)` = round(maxerr_polyak, 4),
+            `logL(最終値)` = round(ll_sgd, 3),
+            `logL(平均)` = round(ll_polyak, 3)) %>%
+  kable()
+```
+
+```{r fig-loglik, fig.height=3.8, fig.cap="図5. 全データ対数尤度の推移（sampling_rate = 0.2）。減衰条件は到達前に失速している。"}
+sel <- c(r020_const = "constant lr", r020_decay = "decay tau=50, polyak from 100",
+         r020_polyak = "constant lr, polyak from 150")
+ll <- trace %>% filter(label %in% names(sel), !is.na(ll_full)) %>%
+  mutate(cond_f = factor(sel[label], levels = unname(sel)))
+
+# 定数学習率の2条件はほぼ完全に重なる。図1と同じ理由で線幅を変えて遮蔽を解く。
+LW2 <- setNames(c(1.7, 0.9, 0.6), unname(sel))
+
+ggplot(ll, aes(iter, ll_full, colour = cond_f, linewidth = cond_f)) +
+  geom_hline(yintercept = LL_BFGS, colour = COL_REF, linetype = "dashed",
+             linewidth = 0.5) +
+  geom_line() +
+  geom_point(aes(size = cond_f)) +
+  scale_colour_manual(values = COL_CAT) +
+  scale_linewidth_manual(values = LW2, guide = "none") +
+  scale_size_manual(values = setNames(c(2.6, 1.6, 1.1), unname(sel)), guide = "none") +
+  coord_cartesian(ylim = c(min(ll$ll_full), LL_BFGS + 3)) +
+  labs(x = "iteration", y = "full-data log-likelihood",
+       title = "Decay applied during the transient stalls the run",
+       subtitle = paste("dashed = BFGS solution; all three at sampling_rate 0.2.",
+                        "\nThe two constant-lr runs coincide;",
+                        "the thicker series is drawn underneath."))
+```
+
+原因は手法ではなく**適用時期**だった。
+
+- `decay_tau = 50` は iter 200 の時点で学習率を 1/5 まで落とす。
+  **まだ最適点に到達していない過渡期に減速してしまい**、`ll_full` は iter 200 でも
+  まだ改善中のまま打ち切られた
+- `polyak_from = 100` は**接近途中の軌跡を平均**した。Polyak-Ruppert 平均は
+  定常状態に入ってからでないと意味がない
+
+定数学習率のまま `polyak_from = 150`（到達後）に変えると、**平均のほうが最終反復値より
+logL が良くなる**（`r sprintf("%.3f", cond$ll_polyak[cond$label=="r020_polyak"])` 対
+`r sprintf("%.3f", cond$ll_sgd[cond$label=="r020_polyak"])`）。手法自体は正しく働く。
+
+ただし係数の最大絶対誤差では平均のほうがわずかに悪い。**尤度が平坦な方向では、
+係数の一致と尤度の一致は別物**であることに注意がいる。
+そして今回は定数学習率でノイズ球が十分小さいので、**そもそも減衰は不要**だった。
+
+## まとめ
+
+```{r tab-all}
+cond %>%
+  transmute(条件 = label, rate,
+            `減衰` = ifelse(is.na(decay_tau), "-", as.character(decay_tau)),
+            `平均` = ifelse(is.na(polyak_from), "-", as.character(polyak_from)),
+            `最大誤差` = round(maxerr_sgd, 4),
+            `logL` = round(ll_sgd, 3),
+            `秒/iter` = round(sec_per_iter, 2),
+            バッチ = batch) %>%
+  kable()
+```
+
+1. **sampling_rate は 0.1 まで下げられる。既存実装のままで、追加の工夫は要らない。**
+   複数回捕獲個体を毎回全部使い単回個体だけを間引く現行の分割が、
+   もともと勾配の分散を小さく保つ設計になっていた
+2. **ただし速度は買えない**（rate 1.0 → 0.1 で 4.4%）。コストはセル数が支配する。
+   速度は advdiff の共有とキャッシュ順序、および共変量の標準化修正による
+   反復数削減で取るべき
+3. **減衰と Polyak 平均を使うなら定常状態に入ってから。** 過渡期に適用すると悪化する
+
+## 次にやること
+
+- **Step 2**: `obj_multi` と `obj_single` で advdiff を共有する。`numDeriv` の
+  摂動順序をキャッシュに合わせる。合わせて 2〜2.5 倍を見込む
+- **Step 3**: クマデータの `wtr` の標準化漏れを直す（本家 `secrad_bear.r:46` 由来）。
+  `conn_wtr` が生スケールのため係数が −6.41 と桁違いになり、
+  `max_step = 0.05` では最低108反復かかっていた。修正後は `optim` の参照解を
+  新しいスケールで取り直す必要がある
+- **Step 4**: 足環データ。検出器の定義と捕獲確率モデルの選択。
+  格子が全国規模になりうるので、**メッシュ解像度と解析範囲の設計**が
+  実行可能性を決める。個体のサブサンプリングでは解決しない
+
+*このレポートの数値と図は `results/sampling_*.csv` と `results/scaling_bench.csv` から生成している。*
