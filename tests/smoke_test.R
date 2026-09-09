@@ -4,7 +4,7 @@
 #
 #   Rscript tests/smoke_test.R
 #
-# 作業ディレクトリはリポジトリルート（git/banding_data）であること。
+# 作業ディレクトリはリポジトリルート（Claude/banding_data）であること。
 # secrad_data$simulate() で小さな合成データを作るので、外部データは一切不要。
 # 所要時間の大半は secrad.r の C++ コンパイル（約26秒）。
 #
@@ -16,6 +16,10 @@
 #   5. loglf(sgd=TRUE)$res が loglf() のスカラーと一致する（改変が既存経路を壊していない）
 #   6. create_subset_secrad() が個体（列）で切り出している
 #   7. wrapper_sgd_loglf_fast() が有限値を返す
+#   8. adcrsgd/sgd_utils.R の高速化が値を変えていない
+#      （キャッシュ共有で loglf が不変、grad_cachewise が numDeriv と一致、
+#        格子が違うオブジェクト同士の共有は拒否される）
+#      速くなったかどうかは tests/cache_bench.R が測る。
 # ---------------------------------------------------------------------------
 
 t_start <- Sys.time()
@@ -70,7 +74,7 @@ g0par_true <- -4
 
 # --- 1. secrad.r を source --------------------------------------------------
 
-cat("[1/7] source(", SOURCEPATH, ") ... ", sep = "")
+cat("[1/8] source(", SOURCEPATH, ") ... ", sep = "")
 
 if (!file.exists(SOURCEPATH)) {
   stop("secrad.r が見つかりません: ", SOURCEPATH,
@@ -89,7 +93,7 @@ check("loglf が sgd 引数を持つ",
 
 # --- 2. 合成データの生成 ----------------------------------------------------
 
-cat("[2/7] 合成データを生成 ... ")
+cat("[2/8] 合成データを生成 ... ")
 
 effort_loc <- integer(length(trapx))
 for (i in seq_along(trapx)) {
@@ -138,7 +142,7 @@ check("単回検出の個体がいる（multi/single 分割が意味を持つ）
 
 # --- 3〜5. loglf の2つの経路 ------------------------------------------------
 
-cat("[3/7] loglf(sgd=FALSE) ... ")
+cat("[3/8] loglf(sgd=FALSE) ... ")
 
 obj <- secrad$new(secrdata = simdata)
 obj$set_model(envmodel = list(D ~ 1, C ~ X, A ~ 0),
@@ -160,7 +164,7 @@ check("loglf() が長さ1の数値を返す",
       is.numeric(ll_scalar) && length(ll_scalar) == 1L)
 check("loglf() が有限値を返す", is.finite(ll_scalar))
 
-cat("[4/7] loglf(sgd=TRUE) ... ")
+cat("[4/8] loglf(sgd=TRUE) ... ")
 ll_list <- obj$loglf(par0, sgd = TRUE)
 cat("done\n")
 
@@ -170,7 +174,7 @@ check("戻り値に res / lambda_grp / loglfmulti が揃っている",
 check("$loglfmulti が有限値", is.finite(ll_list$loglfmulti))
 check("$lambda_grp が有限値", all(is.finite(ll_list$lambda_grp)))
 
-cat("[5/7] 後方互換の回帰テスト ... ")
+cat("[5/8] 後方互換の回帰テスト ... ")
 same <- isTRUE(all.equal(ll_list$res, ll_scalar, tolerance = 1e-10))
 cat(if (same) "一致\n" else "★不一致\n")
 check("loglf(sgd=TRUE)$res が loglf() のスカラーと一致する", same)
@@ -197,7 +201,7 @@ source_functions_only <- function(path, envir = parent.frame()) {
   n
 }
 
-cat("[6/7] create_subset_secrad ... ")
+cat("[6/8] create_subset_secrad ... ")
 
 if (file.exists(WRAPPERPATH)) {
   nfun <- source_functions_only(WRAPPERPATH)
@@ -229,7 +233,7 @@ if (file.exists(WRAPPERPATH)) {
     cat("skip\n")
   }
 
-  cat("[7/7] wrapper_sgd_loglf_fast ... ")
+  cat("[7/8] wrapper_sgd_loglf_fast ... ")
   if (exists("wrapper_sgd_loglf_fast") && exists("create_subset_secrad")) {
     ll_wrap <- wrapper_sgd_loglf_fast(par         = par0,
                                       obj_multi   = sub_multi,
@@ -247,6 +251,75 @@ if (file.exists(WRAPPERPATH)) {
 
 } else {
   cat("skip（", WRAPPERPATH, " が見つからない）\n", sep = "")
+}
+
+# --- [8/8] adcrsgd/sgd_utils.R --------------------------------------------
+#
+# advdiff キャッシュの共有と、キャッシュに沿った順序の有限差分（Step 2）。
+# ここで守りたいのは「速くなったか」ではなく「値が変わっていないか」。
+# 効果の測定は tests/cache_bench.R が受け持つ。
+
+cat("[8/8] sgd_utils ... ")
+
+UTILPATH <- "adcrsgd/sgd_utils.R"
+if (file.exists(UTILPATH)) {
+  source(UTILPATH, encoding = "UTF-8")
+  cat("done\n")
+
+  check("share_advdiff_cache が定義されている", is.function(share_advdiff_cache))
+  check("grad_cachewise が定義されている",      is.function(grad_cachewise))
+
+  # キャッシュキーに効くのは conn_* / adv_* だけ（secrad.r の命名規則）
+  check("cache_par_idx が conn_/adv_ だけを拾う",
+        identical(cache_par_idx(c("dens_0", "conn_0", "conn_X", "adv_X", "g0_1")),
+                  c(2L, 3L, 4L)))
+
+  if (exists("create_subset_secrad") && exists("sub_multi")) {
+    # 共有しても loglf の値が変わらないこと
+    a <- create_subset_secrad(simdata, multi_ids,  model_settings)
+    b <- create_subset_secrad(simdata, single_ids, model_settings)
+    ll_before <- c(a$loglf(par0), b$loglf(par0))
+    share_advdiff_cache(list(a, b))
+    ll_after  <- c(a$loglf(par0), b$loglf(par0))
+    check("キャッシュ共有で loglf の値が変わらない",
+          isTRUE(all.equal(ll_before, ll_after, tolerance = 0)))
+
+    # 格子が違うオブジェクト同士は拒否されること。
+    # これを通すと、キャッシュキーに格子が入っていないため黙って誤値を返す。
+    other <- local({
+      nx <- 5; nc <- nx * nx
+      s <- secrad_data$new(coords = cbind(x = rep(1:nx, each = nx),
+                                          y = rep(1:nx, nx)),
+                           area = rep(1, nc),
+                           grid_cov = data.frame(X = rep(0, nc)),
+                           resolution = c(x = 1, y = 1))
+      s$add_obs(type = "poisson", effort = 10, effort_loc = 1, effort_occ = 1,
+                detect = matrix(1, nrow = 1, ncol = 1))
+      s$ind_cov <- 1
+      o <- secrad$new(secrdata = s)
+      o$set_model(envmodel = model_settings$envmodel,
+                  indmodel = model_settings$indmodel,
+                  occmodel = model_settings$occmodel)
+      o
+    })
+    check("格子が違うオブジェクト同士の共有は拒否される",
+          inherits(try(share_advdiff_cache(list(a, other)), silent = TRUE), "try-error"))
+
+    # 順序を変えただけなので勾配は numDeriv と一致するはず
+    if (exists("wrapper_sgd_loglf_fast") &&
+        requireNamespace("numDeriv", quietly = TRUE)) {
+      f <- function(p) { names(p) <- names(par0)
+        wrapper_sgd_loglf_fast(p, a, b, simdata$nind, 1.0) }
+      g_ref <- numDeriv::grad(f, par0, method = "simple",
+                              method.args = list(eps = 1e-4))
+      g_new <- grad_cachewise(f, par0, eps = 1e-4)
+      check("grad_cachewise が numDeriv::grad(simple) と一致",
+            max(abs(g_ref - g_new)) < 1e-6)
+    }
+  }
+} else {
+  cat("skip\n")
+  check("adcrsgd/sgd_utils.R がある", file.exists(UTILPATH))
 }
 
 # --- 結果 -------------------------------------------------------------------

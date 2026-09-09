@@ -9,8 +9,11 @@ library(viridis)
 library(secr)
 
 source("functions.R", encoding = "UTF-8")
-sourcepath<-"adcrsgd/secrad.r" 
+sourcepath<-"adcrsgd/secrad.r"
 source(sourcepath, encoding = "UTF-8")
+# advdiff キャッシュの共有と、キャッシュに沿った順序の有限差分。
+# 1反復あたりの advdiff.eigen 呼び出しが 10回 -> 4回 になる（tests/cache_bench.R）。
+source("adcrsgd/sgd_utils.R", encoding = "UTF-8")
 
 effort<-read_csv("../../ADCR/doi_10_5061_dryad_ksn02v7bq__v20250117/effort_231225.csv")
 effort_st<-effort%>%st_as_sf(coords=c("x","y"),crs=3100)
@@ -253,28 +256,38 @@ obj_multi_fixed <- create_subset_secrad(
   model_settings = current_model_settings
 )
 
+# advdiff の結果は格子とパラメータだけで決まり、どの個体を持っているかに依存しない。
+# multi 側と single 側で同じキャッシュを指させると、同じ cpar に対する
+# ncell x ncell の計算が1回で済む（クマデータ ncell=8497 では約150秒/回）。
+# 格子が違うオブジェクト同士なら share_advdiff_cache が止めてくれる。
+adcache <- share_advdiff_cache(list(obj_multi_fixed))
+
 if(is_full_sampling){
-  
+
   obj_single_fixed <- create_subset_secrad(
     original_secrdata = secrdata,
     ids = single_ids,
     model_settings = current_model_settings
   )
-  
+  share_advdiff_cache(list(obj_single_fixed), cache = adcache)
+
 } else {
-  
+
   obj_single_fixed <- NULL
-  
+
 }
 
 make_single_obj <- function(ids){
-  
-  create_subset_secrad(
+
+  obj <- create_subset_secrad(
     original_secrdata = secrdata,
     ids = ids,
     model_settings = current_model_settings
   )
-  
+  # ミニバッチのオブジェクトは毎反復作り直すので、そのつど繋ぎ直す
+  share_advdiff_cache(list(obj), cache = adcache)
+  obj
+
 }
 
 get_single_obj <- function(ids){
@@ -363,6 +376,8 @@ if("g0_1" %in% names(max_step)){
   max_step["g0_1"] <- 0.05
 }
 
+# grad_cachewise は前進差分のみ。grad_method は記録として残してあるだけで、
+# 勾配の計算には使われない（save.image の中身を過去の結果と揃えるため）。
 grad_method <- "simple"
 grad_eps <- 1e-4
 
@@ -482,17 +497,18 @@ time_adam_sgd <- system.time(
       
     }
     
+    # numDeriv::grad(method="simple") と同じ前進差分。評価の順序だけが違う。
+    # cpar に効かない係数（dens_0, g0_1）を先に揺らすので、その間キャッシュが
+    # 効き、最後に cpar0 へ戻る余分なミスが出ない。値は完全に一致する
+    # （tests/cache_bench.R で最大差 0 を確認）。
     g <- tryCatch(
-      
-      numDeriv::grad(
+
+      grad_cachewise(
         func = objfun_iter,
         x = current_par,
-        method = grad_method,
-        method.args = list(
-          eps = grad_eps
-        )
+        eps = grad_eps
       ),
-      
+
       error = function(e){
         
         cat(

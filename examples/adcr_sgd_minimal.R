@@ -108,6 +108,10 @@ t0 <- Sys.time()
 suppressMessages(suppressWarnings(source(SOURCEPATH, encoding = "UTF-8")))
 cat(sprintf("   読み込み %.1f秒\n", as.numeric(difftime(Sys.time(), t0, units = "secs"))))
 
+# advdiff キャッシュの共有と、キャッシュに沿った順序の有限差分。
+# 1反復あたりの advdiff.eigen 呼び出しが 10回 -> 4回 になる（tests/cache_bench.R）。
+source("adcrsgd/sgd_utils.R", encoding = "UTF-8")
+
 stopifnot("sgd" %in% names(formals(secrad$public_methods$loglf)))
 stopifnot(requireNamespace("numDeriv", quietly = TRUE))
 
@@ -253,10 +257,17 @@ full_sampling <- isTRUE(all.equal(SAMPLING_RATE, 1.0))
 obj_single_all <- make_subset(simdata, single_ids)   # 全件版。refine と full 用
 sample_size <- max(1, floor(length(single_ids) * SAMPLING_RATE))
 
+# loglf の支配的なコストは advdiff.eigen が作る ncell x ncell 行列で、
+# これは格子とパラメータだけで決まり「どの個体を持っているか」に依存しない。
+# multi 側と single 側に同じキャッシュを指させれば1回で済む。
+adcache <- share_advdiff_cache(list(obj_multi_fixed, obj_single_all))
+
 ## ミニバッチ用の single オブジェクトを返す。full なら作り直さない。
 draw_single <- function() {
   if (full_sampling) return(obj_single_all)
-  make_subset(simdata, sample(single_ids, min(sample_size, length(single_ids))))
+  o <- make_subset(simdata, sample(single_ids, min(sample_size, length(single_ids))))
+  share_advdiff_cache(list(o), cache = adcache)   # 作り直すたびに繋ぎ直す
+  o
 }
 
 
@@ -303,9 +314,11 @@ elapsed <- system.time(
 
     objfun <- make_objfun(draw_single(), SAMPLING_RATE, par_names)
 
+    # numDeriv::grad(method="simple") と同じ前進差分だが、cpar に効かない係数
+    # （dens_0, g0_1）を先に揺らす順序で評価する。その間 advdiff のキャッシュが
+    # 効くので、1反復あたりの呼び出しが減る。値は完全に一致する。
     g <- tryCatch(
-      numDeriv::grad(objfun, current, method = GRAD_METHOD,
-                     method.args = list(eps = GRAD_EPS)),
+      grad_cachewise(objfun, current, eps = GRAD_EPS),
       error = function(e) rep(NA_real_, length(current)))
 
     if (!all(is.finite(g))) {

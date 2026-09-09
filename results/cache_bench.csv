@@ -1,0 +1,4 @@
+"variant","share","ordered","ncell","n_iter","sec_per_iter","advdiff_per_iter"
+"A_current",FALSE,FALSE,900,3,13.1995663642883,10
+"B_shared",TRUE,FALSE,900,3,9.00603628158569,5
+"C_shared_ordered",TRUE,TRUE,900,3,8.42599034309387,4

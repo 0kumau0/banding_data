@@ -29,7 +29,7 @@ sampling_rate を 下げた場合に BFGS
 
 |        |                                   |
 |--------|-----------------------------------|
-| Commit | `9a7e83a（未コミットの変更あり）` |
+| Commit | `82192c6（未コミットの変更あり）` |
 | Branch | `secrad_revise`                   |
 | R      | `4.5.0`                           |
 
@@ -115,6 +115,8 @@ BFGS 参照解は logL =
 解、点線が真値。sampling_rate
 を下げても同じ点に収束する。](figures/samp-fig-traces-1.png)
 
+![[samp-fig-traces-1.png]]
+
 到達点の細部は次のとおり。
 
 | 係数    |  真値 |    BFGS | r100_const | r050_const | r020_const | r010_const |
@@ -139,12 +141,16 @@ single 分割は、この意味で最初から正しかった。
 ![図2. 終盤50反復での係数の標準偏差。sampling_rate
 を下げるとノイズ球は広がるが、広がるのは主に連結性の共変量。](figures/samp-fig-noise-1.png)
 
+![[samp-fig-noise-1.png]]
+
 ## 結果2: ただし速度は買えない
 
 **秒/iter が sampling_rate でほとんど変わらない。**
 
 ![図3. 1反復あたりの所要時間。バッチを 1/10 にしても 4.4%
 しか速くならない。](figures/samp-fig-speed-1.png)
+
+![[samp-fig-speed-1.png]]
 
 第1バッチ（5条件を同時に並列実行したので互いに比較できる）で **rate 1.0
 の 12.90 秒/iter に対し rate 0.1 は 12.33 秒/iter。 バッチを 1/10 にして
@@ -166,6 +172,8 @@ single 分割は、この意味で最初から正しかった。
 に固定して個体数を変えた場合。右: advdiff
 単体のセル数依存（両対数）。](figures/samp-fig-cost-1.png)
 
+![[samp-fig-cost-1.png]]
+
 クマ実データは **ncell = 8497**。右の図から外挿すると advdiff
 1回で約150秒、
 1反復あたり約10回呼ばれるので約1500秒。残りが個体依存部分で、
@@ -177,6 +185,17 @@ single 分割は、この意味で最初から正しかった。
 がオブジェクトごとに独立）ので、 これを共有すれば約2倍。加えて
 `numDeriv` の摂動順序を「連結性の係数を後ろにまとめる」
 ように変えるとキャッシュミスが6回中5回から4回に減る。
+
+これは Step 2 として実装済み（`adcrsgd/sgd_utils.R`）。**advdiff
+の呼び出しが 1反復あたり 10回 → 4回 になり、ncell=900 で 13.20 → 8.43
+秒/iter（1.57倍）**
+（`tests/cache_bench.R`、`results/cache_bench.csv`）。勾配の値は変わらない。
+
+**上の表と図3の秒/iter は Step 2 の前に測ったもの**なので、いま
+`examples/adcr_sgd_sampling.R`
+を回すとこれより速くなる。速度を比較するときは `FAST_CACHE`
+の設定を揃えること。**sampling_rate による差が出ないという結論自体は
+変わらない**（advdiff の回数はミニバッチの大きさに依存しないため）。
 
 ## 結果3: 減衰と Polyak 平均は「到達してから」でないと害になる
 
@@ -193,6 +212,8 @@ single 分割は、この意味で最初から正しかった。
 
 ![図5. 全データ対数尤度の推移（sampling_rate =
 0.2）。減衰条件は到達前に失速している。](figures/samp-fig-loglik-1.png)
+
+![[samp-fig-loglik-1.png]]
 
 原因は手法ではなく**適用時期**だった。
 

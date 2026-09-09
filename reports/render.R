@@ -52,6 +52,35 @@ strip_output_key <- function(path) {
 
 if (strip_output_key(MD)) cat("  YAML から output: を除去\n")
 
+# --- Obsidian の埋め込み記法を併記する --------------------------------------
+#
+# 素の Markdown 記法 ![caption](figures/xxx.png) だけだと Obsidian の
+# 環境によっては記事内で画像が出ない。Obsidian 固有の ![[xxx.png]] を
+# 直後に足しておくと確実に表示される（2026-09-09 のユーザ指示）。
+#
+# ファイル名だけを書く。Obsidian はヴォールト内を名前で解決するので、
+# ノートから見た相対パスやヴォールトルートからのパスに依存せずに済む。
+# 図のファイル名はレポートごとに接頭辞を付けて一意にしてあることが前提。
+#
+# pandoc はキャプションを途中で改行するため、行単位ではなく全文で処理する。
+
+add_obsidian_embeds <- function(path) {
+  txt <- paste(readLines(path, encoding = "UTF-8", warn = FALSE), collapse = "\n")
+  pat <- "!\\[[^]]*\\]\\(([^)[:space:]]+\\.(?:png|jpg|jpeg|gif|svg))\\)"
+  m <- gregexpr(pat, txt, perl = TRUE)
+  if (m[[1]][1] == -1L) return(invisible(0L))
+
+  full  <- regmatches(txt, m)[[1]]
+  files <- basename(sub(pat, "\\1", full, perl = TRUE))
+  regmatches(txt, m) <- list(paste0(full, "\n\n![[", files, "]]"))
+
+  writeLines(txt, path, useBytes = TRUE)
+  length(full)
+}
+
+n_embed <- add_obsidian_embeds(MD)
+if (n_embed > 0L) cat(sprintf("  Obsidian の ![[...]] を %d 箇所に併記\n", n_embed))
+
 figs <- list.files("reports/figures", pattern = "[.]png$", full.names = TRUE)
 cat(sprintf("\n出力: %s (%.1f KB)\n", MD, file.size(MD) / 1024))
 cat(sprintf("図  : %d 枚 / reports/figures/\n", length(figs)))

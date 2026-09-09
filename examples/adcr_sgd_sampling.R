@@ -17,7 +17,16 @@
 # ---------------------------------------------------------------------------
 
 SOURCEPATH <- "adcrsgd/secrad.r"
+UTILPATH   <- "adcrsgd/sgd_utils.R"
 DATAFILE   <- "results/sampling_dataset.RData"     # *.RData は gitignore 済み
+
+# advdiff キャッシュの共有＋キャッシュに沿った順序の有限差分（Step 2）。
+# 勾配の値は変わらない（tests/cache_bench.R で最大差 0 を確認）ので、
+# 推定結果は FAST_CACHE の値によらない。変わるのは所要時間だけ。
+#
+# 注意: results/sampling_*.csv に記録されている秒/iter は Step 2 の前に
+# 測ったもので、FAST_CACHE = FALSE 相当。速度を比較するなら揃えること。
+FAST_CACHE <- TRUE
 
 ## --- 合成データの設定 -------------------------------------------------------
 SEED   <- 20260909
@@ -65,6 +74,7 @@ MODE  <- if (length(args) >= 1) args[1] else "gen"
 LABEL <- if (length(args) >= 2) args[2] else NA_character_
 
 suppressMessages(suppressWarnings(source(SOURCEPATH, encoding = "UTF-8")))
+source(UTILPATH, encoding = "UTF-8")
 stopifnot("sgd" %in% names(formals(secrad$public_methods$loglf)))
 stopifnot(requireNamespace("numDeriv", quietly = TRUE))
 
@@ -170,6 +180,11 @@ if (MODE == "run") {
 
   obj_multi      <- make_subset(simdata, multi_ids)
   obj_single_all <- make_subset(simdata, single_ids)
+
+  # 格子は全オブジェクトで同一なので advdiff の結果を共有できる。
+  adcache <- if (FAST_CACHE)
+    share_advdiff_cache(list(obj_multi, obj_single_all)) else NULL
+
   ll_full <- function(p) { names(p) <- PAR_NAMES
     sgd_loglik(p, obj_multi, obj_single_all, n_detected, 1.0) }
 
@@ -177,7 +192,9 @@ if (MODE == "run") {
   sample_size   <- max(1, floor(length(single_ids) * cond$rate))
   draw_single <- function() {
     if (full_sampling) return(obj_single_all)
-    make_subset(simdata, sample(single_ids, min(sample_size, length(single_ids))))
+    o <- make_subset(simdata, sample(single_ids, min(sample_size, length(single_ids))))
+    if (FAST_CACHE) share_advdiff_cache(list(o), cache = adcache)
+    o
   }
 
   current <- INIT
@@ -194,9 +211,11 @@ if (MODE == "run") {
     objfun <- function(p) { names(p) <- PAR_NAMES
       sgd_loglik(p, obj_multi, obj_single_iter, n_detected, cond$rate) }
 
-    g <- tryCatch(numDeriv::grad(objfun, current, method = GRAD_METHOD,
-                                 method.args = list(eps = GRAD_EPS)),
-                  error = function(e) rep(NA_real_, length(current)))
+    g <- tryCatch(
+      if (FAST_CACHE) grad_cachewise(objfun, current, eps = GRAD_EPS)
+      else numDeriv::grad(objfun, current, method = GRAD_METHOD,
+                          method.args = list(eps = GRAD_EPS)),
+      error = function(e) rep(NA_real_, length(current)))
     if (!all(is.finite(g))) { cat(sprintf("   iter %d: 勾配が NA/Inf。停止\n", iter)); break }
 
     alpha_t <- if (is.na(cond$decay_tau)) ALPHA else ALPHA / (1 + iter / cond$decay_tau)

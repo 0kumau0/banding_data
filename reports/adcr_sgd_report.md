@@ -25,12 +25,12 @@ tags:
 
 | 項目         | 値                              |
 |:-------------|:--------------------------------|
-| Commit       | 1141fb6（未コミットの変更あり） |
+| Commit       | 82192c6（未コミットの変更あり） |
 | Branch       | secrad_revise                   |
 | R            | 4.5.0 / Rtools45                |
 | 尤度エンジン | adcrsgd/secrad.r（本家 + 4行）  |
 | 検証機       | kumada（編集機）                |
-| smoke test   | 22 / 22 項目                    |
+| smoke test   | 28 / 28 項目                    |
 | SGD          | 100 iter / 703 秒               |
 
 実行環境
@@ -49,7 +49,7 @@ tags:
 
 ## smoke test の結果
 
-    ## **22 項目中 22 項目成功。**
+    ## **28 項目中 28 項目成功。**
 
 所要26秒のうち22秒は `secrad.r` の C++
 コンパイルなので、テスト自体は4秒で終わる。
@@ -78,6 +78,12 @@ tags:
 | 20 | 部分集合の detect 行数が元と同じ（努力は削られていない） | OK |
 | 21 | wrapper_sgd_loglf_fast が長さ1の数値を返す | OK |
 | 22 | wrapper_sgd_loglf_fast が有限値を返す | OK |
+| 23 | share_advdiff_cache が定義されている | OK |
+| 24 | grad_cachewise が定義されている | OK |
+| 25 | cache_par_idx が conn\_/adv\_ だけを拾う | OK |
+| 26 | キャッシュ共有で loglf の値が変わらない | OK |
+| 27 | 格子が違うオブジェクト同士の共有は拒否される | OK |
+| 28 | grad_cachewise が numDeriv::grad(simple) と一致 | OK |
 
 要点は2項目ある。
 
@@ -100,8 +106,12 @@ tags:
 ![図1. パラメータの軌跡。橙破線=真値、緑点線=BFGS
 参照解。縦軸はパネルごとに独立。](figures/fig-params-1.png)
 
+![[fig-params-1.png]]
+
 ![図2.
 目的関数と勾配ノルム。対数尤度は単調に改善し、勾配ノルムは1桁以上下がっている。](figures/fig-objective-1.png)
+
+![[fig-objective-1.png]]
 
 対数尤度は `-53.28` から `-33.49` へ 100
 回を通じて単調に改善し、勾配ノルムは `17.5` から `0.72`
@@ -122,6 +132,8 @@ tags:
 ![図3. 推定値の位置関係。パラメータごとに横軸は独立。BFGS
 は対数尤度をほとんど改善していないのに、どのパラメータでも真値・SGD
 解から大きく離れた場所にある。](figures/fig-compare-1.png)
+
+![[fig-compare-1.png]]
 
 ### 尤度が平坦で、パラメータが特定できていない
 
