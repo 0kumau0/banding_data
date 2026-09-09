@@ -9,3 +9,4 @@ config.R
 examples/*.pdf
 reports/*.html
 reports/*_files/
+results/log_*.txt
