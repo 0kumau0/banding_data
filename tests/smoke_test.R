@@ -265,6 +265,16 @@ cat(sprintf("%d 件中 %d 件成功  （所要 %.1f秒）\n",
             length(.results), length(.results) - nfail,
             as.numeric(difftime(Sys.time(), t_start, units = "secs"))))
 
+# 結果を CSV に保存（レポートが実測値を読むため）
+RESULT_CSV <- "results/smoke_test_results.csv"
+dir.create(dirname(RESULT_CSV), showWarnings = FALSE, recursive = TRUE)
+write.csv(data.frame(no      = seq_along(.results),
+                     label   = vapply(.results, `[[`, "", "label"),
+                     ok      = vapply(.results, `[[`, logical(1), "ok"),
+                     message = vapply(.results, `[[`, "", "msg")),
+          RESULT_CSV, row.names = FALSE, fileEncoding = "UTF-8")
+cat("保存:", RESULT_CSV, "\n")
+
 if (nfail > 0L) {
   cat("\n★ 失敗があります。別PCへ push する前に解消してください。\n")
   quit(status = 1L)

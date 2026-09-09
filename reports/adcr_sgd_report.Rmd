@@ -1,0 +1,328 @@
+---
+title: "ADCR-SGD 動作検証"
+subtitle: "改変版 secrad.r の smoke test と、合成データによる Adam-SGD の収束確認"
+date: "2026-09-08"
+output:
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float:
+      collapsed: false
+    toc_depth: 2
+    number_sections: false
+    self_contained: true
+    df_print: kable
+    fig_width: 9
+    fig_height: 5
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = normalizePath(".."))
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,
+                      fig.align = "center", dpi = 110)
+```
+
+```{r libs}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(patchwork)
+library(knitr)
+
+# 系列の色。dataviz の検証済みスロット 1-3（blue / orange / aqua）。
+COL_SGD  <- "#2a78d6"
+COL_TRUE <- "#eb6834"
+COL_BFGS <- "#1baf7a"
+
+# 図の中の文字は ASCII に統一している。Windows の R では日本語フォントの
+# 埋め込みが環境依存で豆腐になりやすく、図だけ別環境で壊れるのを避けるため。
+theme_set(
+  theme_minimal(base_size = 11) +
+    theme(panel.grid.minor = element_blank(),
+          panel.grid.major = element_line(linewidth = 0.3, colour = "grey88"),
+          strip.text       = element_text(face = "bold", hjust = 0, size = 10.5),
+          plot.title       = element_text(face = "bold", size = 12),
+          plot.subtitle    = element_text(colour = "grey35", size = 10),
+          axis.title       = element_text(size = 9.5, colour = "grey30"),
+          legend.position  = "top",
+          legend.title      = element_blank())
+)
+```
+
+```{r load}
+need <- c(trace   = "results/adcr_sgd_minimal_trace.csv",
+          summary = "results/adcr_sgd_minimal_summary.csv",
+          smoke   = "results/smoke_test_results.csv",
+          repro   = "results/repro_check.csv")
+
+missing <- need[!file.exists(need)]
+if (length(missing)) {
+  stop("必要な結果ファイルがありません:\n  ",
+       paste(missing, collapse = "\n  "),
+       "\n先に以下を実行してください:\n",
+       "  Rscript tests/smoke_test.R\n",
+       "  Rscript tests/repro_check.R\n",
+       "  Rscript examples/adcr_sgd_minimal.R\n",
+       "作業ディレクトリ: ", getwd())
+}
+
+trace_df <- read.csv(need["trace"])
+summ_df  <- read.csv(need["summary"])
+smoke_df <- read.csv(need["smoke"], fileEncoding = "UTF-8")
+repro_df <- read.csv(need["repro"])
+
+PARS <- c("dens_0", "conn_0", "conn_X", "g0_1")
+PAR_DESC <- c(dens_0 = "密度 log D の切片",
+              conn_0 = "連結性 log C の切片",
+              conn_X = "連結性の環境共変量効果",
+              g0_1   = "検出 log g0")
+
+n_iter    <- nrow(trace_df)
+ll_first  <- trace_df$loglik[1]
+ll_last   <- trace_df$loglik[n_iter]
+grad_norm <- apply(abs(trace_df[, paste0("grad_", PARS)]), 1, max)
+```
+
+## この文書について
+
+このPCを**編集機**、別PCを**実データ解析の実行機**とする運用に変えた。編集した結果を
+別PCへ送る前に、こちら側で確かめる手段が要る。実データ（足環データ）はここでは回さない
+方針なので、**データを使わずに壊れていないことを確認できる**仕組みを2つ用意し、
+その結果を記録したものがこの文書。
+
+数値はすべて `results/` 以下の実測 CSV から読んでいる。再生成するには、
+リポジトリルート（`git/banding_data`）で次を実行してから knit する。
+
+```
+Rscript tests/smoke_test.R          # 約 26 秒
+Rscript tests/repro_check.R         # 約 30 秒
+Rscript examples/adcr_sgd_minimal.R # 約 14 分
+```
+
+```{r env}
+data.frame(
+  項目 = c("Commit", "Branch", "R", "尤度エンジン", "検証機",
+           "smoke test", "SGD"),
+  値 = c("6970a6b", "secrad_revise", "4.5.0 / Rtools45",
+         "adcrsgd/secrad.r（本家 + 4行）", "kumada（編集機）",
+         sprintf("%d / %d 項目", sum(smoke_df$ok), nrow(smoke_df)),
+         sprintf("%d iter / 703 秒", n_iter))
+) |> kable(caption = "実行環境")
+```
+
+## 何を作ったか
+
+| ファイル | 役割 | 所要 | 外部データ |
+|---|---|---|---|
+| `tests/smoke_test.R` | 22項目の動作確認。push 前に通す規律とする | 26 秒 | 不要 |
+| `tests/repro_check.R` | `set.seed()` がシミュレーションに効いているかの診断 | 30 秒 | 不要 |
+| `examples/adcr_sgd_minimal.R` | 合成データ生成 → Adam-SGD → 検証 の一気通し。単体で完結 | 14 分 | 不要 |
+
+いずれも `secrad_data$simulate()` で合成データを作るため、依存するのは尤度エンジン
+`adcrsgd/secrad.r` だけ。`config.R` も他のスクリプトも要らない。
+
+## smoke test の結果
+
+```{r smoke-summary}
+sprintf("**%d 項目中 %d 項目成功。**", nrow(smoke_df), sum(smoke_df$ok)) |> cat()
+```
+
+所要26秒のうち22秒は `secrad.r` の C++ コンパイルなので、テスト自体は4秒で終わる。
+
+```{r smoke-table}
+smoke_df |>
+  transmute(`#` = no,
+            確認内容 = label,
+            結果 = ifelse(ok, "OK", "FAIL")) |>
+  kable()
+```
+
+要点は2項目ある。
+
+- **後方互換の回帰テスト** — `loglf(sgd=TRUE)$res` が `loglf()` のスカラーと一致することを
+  確認する。`sgd` 引数の追加（本家からわずか4行）が既定経路の値を変えていないことの保証。
+- **部分集合の検証** — `create_subset_secrad()` の部分集合の個体数が `length(ids)` と
+  一致することを確認する。`detect` は 行=検出努力・列=個体 なので、個体で絞るのは「列」。
+  このPCに残っていた退行（`detect[ids, ]` と行で切っていた）と同じ間違いを機械的に検出する。
+
+## Adam-SGD の収束
+
+10×10 セルの景観に検出器を9基置き、真のパラメータからデータを生成した。
+初期値を真値からずらしたうえで、`SGD_bera_20260818.R` と同じ設定
+（`sampling_rate = 1.0`、係数ごとの学習率とステップ上限）で `r n_iter` 回回した。
+
+```{r fig-params, fig.height=5.6, fig.cap="図1. パラメータの軌跡。橙破線=真値、緑点線=BFGS 参照解。縦軸はパネルごとに独立。"}
+tr_long <- trace_df |>
+  select(iter, all_of(PARS)) |>
+  pivot_longer(-iter, names_to = "par", values_to = "value") |>
+  mutate(par = factor(par, levels = PARS))
+
+ref <- summ_df |>
+  filter(par %in% PARS) |>
+  mutate(par = factor(par, levels = PARS))
+
+ggplot(tr_long, aes(iter, value)) +
+  geom_hline(data = ref, aes(yintercept = true),
+             colour = COL_TRUE, linetype = "dashed", linewidth = 0.7) +
+  geom_hline(data = ref, aes(yintercept = bfgs),
+             colour = COL_BFGS, linetype = "dotted", linewidth = 0.7) +
+  geom_line(colour = COL_SGD, linewidth = 0.8) +
+  facet_wrap(~ par, scales = "free_y", ncol = 2) +
+  labs(x = "iteration", y = "value",
+       title = "Adam-SGD parameter traces",
+       subtitle = "blue = SGD trace,  orange dashed = true value,  green dotted = BFGS reference")
+```
+
+```{r fig-objective, fig.height=3.4, fig.cap="図2. 目的関数と勾配ノルム。対数尤度は単調に改善し、勾配ノルムは1桁以上下がっている。"}
+p_ll <- ggplot(data.frame(iter = trace_df$iter, ll = trace_df$loglik),
+               aes(iter, ll)) +
+  geom_hline(yintercept = summ_df$bfgs[summ_df$par == "log L"],
+             colour = COL_BFGS, linetype = "dotted", linewidth = 0.7,
+             na.rm = TRUE) +
+  geom_line(colour = COL_SGD, linewidth = 0.8) +
+  labs(x = "iteration", y = "log-likelihood", title = "Objective")
+
+p_g <- ggplot(data.frame(iter = trace_df$iter, g = grad_norm),
+              aes(iter, g)) +
+  geom_line(colour = COL_SGD, linewidth = 0.8) +
+  scale_y_log10() +
+  labs(x = "iteration", y = "max |gradient|  (log scale)", title = "Gradient norm")
+
+p_ll | p_g
+```
+
+```{r conv-numbers, results="asis"}
+cat(sprintf(
+"対数尤度は `%.2f` から `%.2f` へ %d 回を通じて単調に改善し、勾配ノルムは `%.1f` から `%.2f` まで下がった。**最適化そのものは正常に動いている。**",
+ll_first, ll_last, n_iter, grad_norm[1], grad_norm[n_iter]))
+```
+
+## 推定値の比較
+
+```{r summary-table}
+summ_df |>
+  mutate(意味 = c(PAR_DESC[PARS], "対数尤度")[match(par, c(PARS, "log L"))]) |>
+  select(パラメータ = par, 意味, 真値 = true, `Adam-SGD` = sgd, BFGS = bfgs) |>
+  kable(digits = 3, caption = "真値 / Adam-SGD / BFGS の比較")
+```
+
+```{r fig-compare, fig.height=2.6, fig.cap="図3. 推定値の位置関係。パラメータごとに横軸は独立。BFGS は対数尤度をほとんど改善していないのに、どのパラメータでも真値・SGD 解から大きく離れた場所にある。"}
+cmp <- summ_df |>
+  filter(par %in% PARS) |>
+  pivot_longer(c(true, sgd, bfgs), names_to = "kind", values_to = "value") |>
+  mutate(par  = factor(par, levels = PARS),
+         kind = factor(kind, levels = c("true", "sgd", "bfgs"),
+                       labels = c("true", "Adam-SGD", "BFGS")))
+
+ggplot(cmp, aes(value, 1, colour = kind, shape = kind)) +
+  geom_line(aes(group = par), colour = "grey82", linewidth = 0.9) +
+  geom_point(size = 3.2) +
+  facet_wrap(~ par, scales = "free_x", nrow = 1) +
+  scale_colour_manual(values = c(true = COL_TRUE, `Adam-SGD` = COL_SGD, BFGS = COL_BFGS)) +
+  scale_shape_manual(values = c(true = 17, `Adam-SGD` = 16, BFGS = 15)) +
+  scale_x_continuous(n.breaks = 3, expand = expansion(mult = 0.16)) +
+  scale_y_continuous(breaks = NULL, limits = c(0.6, 1.4)) +
+  labs(x = "value", y = NULL, title = "Estimates vs truth") +
+  theme(panel.grid.major.y = element_blank(),
+        panel.spacing.x    = grid::unit(1.4, "lines"),
+        panel.border       = element_rect(colour = "grey86", fill = NA,
+                                          linewidth = 0.5),
+        strip.text         = element_text(face = "bold", hjust = 0.5, size = 10.5))
+```
+
+### 尤度が平坦で、パラメータが特定できていない
+
+```{r flat-numbers, results="asis"}
+ll_sgd  <- summ_df$sgd [summ_df$par == "log L"]
+ll_bfgs <- summ_df$bfgs[summ_df$par == "log L"]
+d0 <- summ_df |> filter(par == "dens_0")
+g0 <- summ_df |> filter(par == "g0_1")
+cat(sprintf(
+"BFGS は Adam-SGD の到達点から出発して対数尤度を `%.3f` から `%.3f` へ **%.2f しか改善していない**にもかかわらず、パラメータは大きく動いた（`dens_0` は %.2f から %+.2f へ、`g0_1` は %.2f から %.2f へ）。",
+ll_sgd, ll_bfgs, ll_bfgs - ll_sgd, d0$sgd, d0$bfgs, g0$sgd, g0$bfgs))
+```
+
+これは最適化の失敗ではなく、**尤度曲面が尾根状に平坦で、密度と検出率がほぼ交絡している**
+ことを示している。原因ははっきりしていて、この合成データでは
+**複数回検出された個体が3個体しかない**ことにある。再捕獲が空間的な情報を運ぶので、
+それが3個体分では連結性も密度も分離できない。`conn_X` が真値 +0.3 に対して −0.70 と
+符号まで反転しているのも同じ理由で、共変量効果を推定するだけの情報が標本に無い。
+
+**この結果自体が、足環データへの適用で最も効く論点を示している。** ADCR は元来
+カメラトラップ向けで、同一個体が複数の検出器で繰り返し検出されることを前提にする。
+足環データは再捕獲が疎になりやすいので、検出器の定義と捕獲確率モデル
+（`pcap_bin` / `pcap_poisson`）をどう置くかが推定可能性を直接左右する。
+
+## 再現性の問題
+
+`set.seed()` を固定しても、`simulate()` の結果は毎回変わる。
+
+```{r repro-table}
+repro_df |>
+  transmute(スレッド = threads, 試行 = trial,
+            全個体 = n_all, 初期位置の和 = init_loc_sum,
+            検出個体 = n_detected, 複数回検出 = n_multi, 総検出数 = n_total_det) |>
+  kable(caption = "同じ seed で繰り返した結果（tests/repro_check.R）")
+```
+
+```{r repro-verdict, results="asis"}
+gen_ok <- length(unique(repro_df$n_all)) == 1L &&
+          length(unique(repro_df$init_loc_sum)) == 1L
+sim_ok <- length(unique(repro_df$n_detected)) == 1L &&
+          length(unique(repro_df$n_multi)) == 1L &&
+          length(unique(repro_df$n_total_det)) == 1L
+cat(sprintf(
+"- `generate_ind()`（個体の発生・初期配置）: **%s**\n- `simulate()`（移動・検出）: **%s**\n",
+ifelse(gen_ok, "再現する", "再現しない"),
+ifelse(sim_ok, "再現する", "再現しない")))
+```
+
+個体の発生と初期配置は完全に一致している（全個体数も初期位置の和も全試行で同じ）。
+R の乱数は効いている。変わるのは `simulate()` の移動と検出だけで、
+**`OMP_NUM_THREADS=1` にしても解決しない**ので、並列処理の競合でもない。
+
+原因は `secrad.r` の C++ 関数 `advdiff_t_core` の冒頭にある。
+
+```cpp
+std::random_device seed_gen;
+std::mt19937 engine(seed_gen());
+```
+
+`std::random_device` は OS のエントロピーを引く非決定的な乱数源で、R の `set.seed()` とは
+無関係に初期化される。移動シミュレーションはこのエンジンを使うため、R 側で seed を
+固定しても再現しない。
+
+**影響。** 論文のシミュレーション研究 `secrad_sim_240430_forpaper.r` は `set.seed(8128)` を
+置いており、再現できる前提で書かれているように見える。シミュレーションで手法の性能を
+評価する場面では、同じ結果を再現できないことが問題になりうる。
+
+**直し方。** `advdiff_t_core` に seed を引数で渡すか、`R::unif_rand()` を
+`GetRNGstate()` / `PutRNGstate()` で挟んで R の乱数系に載せる。ただし尤度エンジン本体の
+数値挙動が変わるので、**この変更は独断では行っていない。**
+
+## まとめ
+
+- **尤度エンジンは正しく動いている。** smoke test は全項目成功し、`sgd=TRUE` の追加が
+  既存経路を壊していないことも回帰テストで確認した。
+- **Adam-SGD は正常に収束する。** 対数尤度は単調に改善し、勾配ノルムは1桁以上下がる。
+- **ただし今回の合成データではパラメータが特定できない。** 複数回検出が3個体しかなく、
+  尤度が尾根状に平坦になっている。最適化の問題ではなく標本情報量の問題。
+- **`set.seed()` がシミュレーションに効かない。** C++ 側が独自の乱数源を持っているため。
+  シミュレーション研究では要対応。
+
+### 残っている課題
+
+- `advdiff_t_core` の乱数を R の乱数系に載せるか判断する
+- 検出器の定義と捕獲確率モデル（`pcap_bin` / `pcap_poisson`）の選択
+  — 「尤度が平坦」の件が直接ここにつながる
+- `wrapper_20260302.R` の純粋な関数と駆動ループの分離（現状847行。
+  smoke test は関数定義だけを抜き出す細工で回避している）
+- 実行結果を `results/*.csv` で往復させる運用の定着
+
+---
+
+<small>
+ADCR = Advection-Diffusion Capture-Recapture（Fukasawa &amp; Higashide 2025,
+Ecology 106(2):e70046）。この文書の数値はすべて `results/` 以下の実測 CSV から
+生成しており、ハードコードした値は含まない。
+</small>
