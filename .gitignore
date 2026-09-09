@@ -10,3 +10,11 @@ examples/*.pdf
 reports/*.html
 reports/*_files/
 results/log_*.txt
+
+# SGD_bear_20260909.R の成果物。
+# 実行結果は別PCから持ち帰って解析するので追跡する（*.RData の例外）。
+# 途中経過（チェックポイント・BFGS のキャッシュ）と DRY_RUN の出力は追跡しない。
+!SGD_bear_*_result.RData
+SGD_bear_*_checkpoint.rds
+SGD_bear_*_optim.rds
+SGD_bear_*_dryrun_*
