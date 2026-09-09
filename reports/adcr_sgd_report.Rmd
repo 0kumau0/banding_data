@@ -1,15 +1,29 @@
 ---
 title: "ADCR-SGD 動作検証"
 subtitle: "改変版 secrad.r の smoke test と、合成データによる Adam-SGD の収束確認"
-date: "2026-09-08"
+date: 2026-09-08
+tags:
+  - ADCR
+  - secrad
+  - SGD
+  - 検証
 output:
+  md_document:
+    variant: gfm
+    preserve_yaml: true
+    toc: false
+    df_print: kable
+    # implicit_figures を切らないと pandoc が ![](...) を <figure> HTML に変換する。
+    # Obsidian では素の Markdown 画像記法のほうが確実に表示される。
+    md_extensions: "-implicit_figures"
+    fig_width: 9
+    fig_height: 5
   html_document:
     theme: flatly
     toc: true
     toc_float:
       collapsed: false
     toc_depth: 2
-    number_sections: false
     self_contained: true
     df_print: kable
     fig_width: 9
@@ -17,9 +31,13 @@ output:
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_knit$set(root.dir = normalizePath(".."))
+# 作業ディレクトリはこの .Rmd がある reports/ のまま。
+# こうしておくと fig.path が .md からの相対パスとして正しく解決され、
+# Obsidian でもそのまま図が表示される。CSV は ../results/ を見る。
+# fig.align は指定しない。指定すると Markdown 出力で生の <img> タグになり、
+# Obsidian の画像埋め込み機能が効かなくなる。既定なら ![caption](path) で出る。
 knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,
-                      fig.align = "center", dpi = 110)
+                      dpi = 110, fig.path = "figures/")
 ```
 
 ```{r libs}
@@ -50,10 +68,10 @@ theme_set(
 ```
 
 ```{r load}
-need <- c(trace   = "results/adcr_sgd_minimal_trace.csv",
-          summary = "results/adcr_sgd_minimal_summary.csv",
-          smoke   = "results/smoke_test_results.csv",
-          repro   = "results/repro_check.csv")
+need <- c(trace   = "../results/adcr_sgd_minimal_trace.csv",
+          summary = "../results/adcr_sgd_minimal_summary.csv",
+          smoke   = "../results/smoke_test_results.csv",
+          repro   = "../results/repro_check.csv")
 
 missing <- need[!file.exists(need)]
 if (length(missing)) {
@@ -100,10 +118,27 @@ Rscript examples/adcr_sgd_minimal.R # 約 14 分
 ```
 
 ```{r env}
+# Commit / Branch は knit 時の git から取る。ハードコードするとレポートと
+# コードのずれに気づけない。作業ディレクトリは reports/ だがリポジトリ内なので
+# git は正しく答える。git が無い環境では "(不明)" になるだけで knit は通る。
+git_out <- function(args) {
+  tryCatch(system2("git", args, stdout = TRUE, stderr = FALSE),
+           warning = function(e) character(0),
+           error   = function(e) character(0))
+}
+commit <- git_out(c("rev-parse", "--short", "HEAD"))
+commit <- if (length(commit)) commit[1] else "(不明)"
+if (length(git_out(c("status", "--porcelain")))) {
+  commit <- paste0(commit, "（未コミットの変更あり）")
+}
+branch <- git_out(c("rev-parse", "--abbrev-ref", "HEAD"))
+branch <- if (length(branch)) branch[1] else "(不明)"
+
 data.frame(
   項目 = c("Commit", "Branch", "R", "尤度エンジン", "検証機",
            "smoke test", "SGD"),
-  値 = c("6970a6b", "secrad_revise", "4.5.0 / Rtools45",
+  値 = c(commit, branch,
+         paste0(R.version$major, ".", R.version$minor, " / Rtools45"),
          "adcrsgd/secrad.r（本家 + 4行）", "kumada（編集機）",
          sprintf("%d / %d 項目", sum(smoke_df$ok), nrow(smoke_df)),
          sprintf("%d iter / 703 秒", n_iter))
@@ -321,8 +356,6 @@ std::mt19937 engine(seed_gen());
 
 ---
 
-<small>
-ADCR = Advection-Diffusion Capture-Recapture（Fukasawa &amp; Higashide 2025,
+*ADCR = Advection-Diffusion Capture-Recapture（Fukasawa & Higashide 2025,
 Ecology 106(2):e70046）。この文書の数値はすべて `results/` 以下の実測 CSV から
-生成しており、ハードコードした値は含まない。
-</small>
+生成しており、ハードコードした値は含まない。*

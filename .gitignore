@@ -3,6 +3,8 @@
 *.RData
 .Ruserdata
 *.png
+# レポートの図は .md から参照するので追跡する（別PC・GitHub 上で画像が壊れないように）
+!reports/figures/*.png
 config.R
 examples/*.pdf
 reports/*.html
