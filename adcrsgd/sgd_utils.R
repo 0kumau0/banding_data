@@ -5,7 +5,7 @@
 #   source("adcrsgd/secrad.r")
 #   source("adcrsgd/sgd_utils.R")
 #
-# 背景（2026-09-09 の profiling。docs/2026-09-09_作業記録.md）:
+# 背景（2026-09-09 の profiling。docs/20260909_作業記録.md）:
 #
 # loglf の支配的なコストは advdiff.eigen() が作る ncell x ncell 行列で、
 # 個体数とは無関係。クマデータは ncell=8497 で advdiff 1回が約150秒。
