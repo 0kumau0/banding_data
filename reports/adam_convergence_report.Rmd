@@ -1,0 +1,314 @@
+---
+title: "Adam の収束診断"
+subtitle: "クマ実行が止まった理由と、設定で直せるかの比較"
+date: 2026-09-10
+tags:
+  - ADCR
+  - secrad
+  - SGD
+  - Adam
+  - 収束
+output:
+  md_document:
+    variant: gfm
+    preserve_yaml: true
+    toc: false
+    df_print: kable
+    md_extensions: "-implicit_figures"
+    fig_width: 9
+    fig_height: 5
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float:
+      collapsed: false
+    toc_depth: 2
+    self_contained: true
+    df_print: kable
+    fig_width: 9
+    fig_height: 5
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,
+                      dpi = 110, fig.path = "figures/adam-")
+```
+
+```{r libs}
+library(ggplot2); library(dplyr); library(tidyr); library(patchwork); library(knitr)
+
+# 条件の identity を色で分ける。dataviz references/palette.md のカテゴリカル
+# スロット 1-6 を順番に使う（線グラフなので adjacent pairlist で通る配色）。
+COL6 <- c("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300")
+COL_REF <- "#41403d"
+
+theme_set(
+  theme_minimal(base_size = 11) +
+    theme(panel.grid.minor = element_blank(),
+          panel.grid.major = element_line(linewidth = 0.3, colour = "grey88"),
+          strip.text = element_text(face = "bold", hjust = 0, size = 10.5),
+          plot.title = element_text(face = "bold", size = 12),
+          plot.subtitle = element_text(colour = "grey35", size = 10),
+          axis.title = element_text(size = 9.5, colour = "grey30"),
+          legend.position = "top", legend.title = element_blank())
+)
+```
+
+```{r load}
+LABELS <- c("base", "b2_099", "b2_090", "reset100", "alpha_hi", "b2_099_hi")
+DESC <- c(base = "beta2=0.999 (現行)", b2_099 = "beta2=0.99", b2_090 = "beta2=0.9",
+          reset100 = "100反復ごとにリセット", alpha_hi = "alpha x2.5",
+          b2_099_hi = "beta2=0.99 + alpha x2.5")
+
+need <- c(sprintf("../results/adam_settings_summary_%s.csv", LABELS),
+          sprintf("../results/adam_settings_trace_%s.csv", LABELS),
+          "../results/bear_run_20260904_summary.csv",
+          "../results/bear_run_20260904_ratio.csv",
+          "../results/bear_run_20260904_stepgrad.csv",
+          "../results/sampling_trace_r100_const.csv",
+          "../results/sampling_summary_r100_const.csv")
+missing <- need[!file.exists(need)]
+if (length(missing))
+  stop("必要な結果ファイルがありません:\n  ", paste(missing, collapse = "\n  "),
+       "\n先に以下を実行してください:\n",
+       "  Rscript examples/extract_bear_trace.R\n",
+       "  Rscript examples/adam_settings.R run <label>   # 全 label 分\n")
+
+summ  <- bind_rows(lapply(LABELS, function(L)
+  read.csv(sprintf("../results/adam_settings_summary_%s.csv", L))))
+trace <- bind_rows(lapply(LABELS, function(L)
+  transform(read.csv(sprintf("../results/adam_settings_trace_%s.csv", L)), label = L)))
+
+bear_summ  <- read.csv("../results/bear_run_20260904_summary.csv")
+bear_ratio <- read.csv("../results/bear_run_20260904_ratio.csv")
+bear_sg    <- read.csv("../results/bear_run_20260904_stepgrad.csv")
+
+s1_trace <- read.csv("../results/sampling_trace_r100_const.csv")
+s1_summ  <- read.csv("../results/sampling_summary_r100_const.csv")
+
+PARS <- c("dens_0", "conn_0", "conn_X1", "conn_X2", "g0_1")
+lab_f <- function(x) factor(DESC[x], levels = unname(DESC[LABELS]))
+trace$cond <- lab_f(trace$label)
+summ$cond  <- lab_f(summ$label)
+```
+
+```{r env}
+git_out <- function(a) tryCatch(system2("git", a, stdout = TRUE, stderr = FALSE),
+                                warning = function(e) character(0),
+                                error = function(e) character(0))
+commit <- git_out(c("rev-parse", "--short", "HEAD"))
+commit <- if (length(commit)) commit[1] else "(不明)"
+if (length(git_out(c("status", "--porcelain")))) commit <- paste0(commit, "（未コミットの変更あり）")
+```
+
+## この文書について
+
+クマ実データでの Adam-SGD（`SGD_bera_20260818.R`、630反復）は、`conn_wtr` だけが
+`optim` 解に届かないまま止まった。これを「あと数百反復回せば済む」と読んでいたが、
+**トレースを解析すると、収束したのではなく動けなくなっていた**ことが分かった。
+
+1反復に約2200秒かかるので、これは設定で直せるなら直しておきたい。
+合成データ（Step 1 と同じもの。BFGS 解が既知）で6つの設定を比べた結果をまとめる。
+
+Commit `` `r commit` ``。数値はすべて `results/*.csv` から読んでいる。再生成は
+
+```
+Rscript examples/extract_bear_trace.R
+Rscript examples/adam_settings.R run base     # 以下6条件ぶん
+Rscript reports/render.R adam_convergence_report
+```
+
+## 1. クマ実行で何が起きていたか
+
+### max_step は一度も効いていない
+
+まず、以前「`max_step` で頭打ちになる」と説明したのは誤りだった。
+
+```{r tab-bear}
+bear_summ %>%
+  transmute(係数 = par, 初期値 = round(init, 4), `optim 解` = round(optim, 4),
+            距離 = round(distance, 4), alpha, max_step,
+            `上限に当たった回数` = n_capped) %>% kable()
+```
+
+**`max_step` の上限に当たった回数は全係数で 0。** 効いている上限は `alpha`（0.02〜0.03）
+のほうで、Adam のステップ `alpha * m̂/√v̂` は `m̂/√v̂ ≤ 1` 程度なので高々 `alpha` になる。
+`max_step`（0.05）は `alpha` より大きく、出番がなかった。
+
+### conn_wtr はむしろ最も速く動いていた
+
+```{r fig-bear-ratio, fig.height=3.6, fig.cap="図1. クマ実行での |step|/alpha の中央値。1 が Adam の理論上の最大。終盤（451-）で全係数が 1/1000 まで落ちている。"}
+br <- bear_ratio %>% pivot_longer(-block, names_to = "par", values_to = "ratio") %>%
+  mutate(block = factor(block, levels = bear_ratio$block),
+         par = factor(par, levels = bear_summ$par))
+ggplot(br, aes(block, ratio, colour = par, group = par)) +
+  geom_line(linewidth = 0.8) + geom_point(size = 2.2) +
+  scale_colour_manual(values = COL6[1:5]) +
+  scale_y_log10() +
+  labs(x = "記録の区間", y = "|step| / alpha (log)",
+       title = "The optimizer ran out of step size, not out of gradient",
+       subtitle = "conn_wtr (green) kept the largest steps throughout, yet everything collapses at the end")
+```
+
+`conn_wtr` は1反復あたりでは**最も大きく動いていた**（区間 151-300 で 0.48、他は 0.10〜0.23）。
+遅かったのは単に距離が長かったから — 初期値からの距離が 5.41 で、他は 0.34〜3.21。
+これは生スケール（sd = 0.0724）ゆえに係数が14倍に膨らんだ結果で、
+標準化すればこの距離は 0.46 に縮む（`SGD_bear_20260909.R` で修正済み）。
+
+### 止まったのは収束したからではない
+
+```{r tab-bear-grad}
+bear_summ %>%
+  transmute(係数 = par,
+            `終盤 mean(g)` = signif(grad_mean_tail, 4),
+            `終盤 sd(g)` = signif(grad_sd_tail, 3),
+            `SN比` = round(snr_tail, 2),
+            `符号一致率` = sprintf("%.0f%%", 100 * sign_agree_tail)) %>% kable()
+```
+
+終盤100反復で、`dens_0` 以外は**符号一致率 100%、SN比 5.8〜7.6**。
+勾配はまだはっきりした方向を指していた。それでもステップは `alpha` の 1/1000。
+**「収束して止まった」のではなく「動けなくなって止まった」。**
+
+原因は Adam の `v`。ステップは `alpha * m̂/√v̂` で、`v` は `beta2 = 0.999` の指数移動平均、
+つまり約1000反復ぶんの記憶を持つ。序盤の大きな勾配（`g0_1` で |g| ≈ 107）が
+いつまでも `v` に残り、勾配が小さくなった後半のステップを抑え込む。
+
+### 同じことが合成データでも起きていた
+
+Step 1 の `r100_const`（完全バッチ、ミニバッチノイズ無し）でも同じ形が出ている。
+
+```{r tab-s1}
+bfgs <- setNames(s1_summ$bfgs, s1_summ$par)
+alpha1 <- c(dens_0=0.02, conn_0=0.03, conn_X1=0.03, conn_X2=0.03, g0_1=0.02)
+d <- as.matrix(s1_trace[, PARS]); st <- rbind(NA, diff(d))
+err1 <- apply(d, 1, function(r) max(abs(r - bfgs[PARS])))
+data.frame(区間 = c("1-50","51-100","101-150","151-200"),
+           `区間末の最大誤差` = round(sapply(list(1:50,51:100,101:150,151:200),
+                                             function(w) err1[max(w)]), 4),
+           `|step|/alpha` = round(sapply(list(1:50,51:100,101:150,151:200),
+                                         function(w) median(sweep(abs(st[w,,drop=FALSE]),2,alpha1,"/"), na.rm=TRUE)), 4),
+           check.names = FALSE) %>% kable()
+```
+
+Step 1 のレポートで「200反復では Adam が収束しきっていないだけ」と書いた残差 0.035 は、
+**まさにこの現象**だった。原因が分かれば設定で直せる。
+
+## 2. 設定の比較
+
+同じ合成データ・同じ初期値で、6つの設定を400反復ずつ走らせた。
+判定は BFGS 解との最大絶対誤差。
+
+```{r tab-settings}
+summ %>% arrange(final_err) %>%
+  transmute(設定 = as.character(cond),
+            `誤差<0.05` = iter_to_0.05, `誤差<0.02` = iter_to_0.02,
+            `誤差<0.01` = iter_to_0.01,
+            `最終誤差` = signif(final_err, 3),
+            `logL 差` = round(final_ll - ll_bfgs, 4),
+            `最終 |step|/alpha` = signif(final_step_ratio, 3)) %>% kable()
+```
+
+```{r fig-settings-err, fig.height=4.4, fig.cap="図2. BFGS 解との最大絶対誤差（対数軸）。現行設定も下がり続けるが、他の設定より一貫して遅い。"}
+ggplot(trace, aes(iter, err, colour = cond)) +
+  geom_line(linewidth = 0.7) +
+  scale_colour_manual(values = COL6) +
+  scale_y_log10() +
+  labs(x = "iteration", y = "max |par - BFGS| (log)",
+       title = "Only the settings that forget the early gradients actually converge",
+       subtitle = "same data, same start, same alpha unless noted")
+```
+
+### max_step は上げた条件でもほとんど効いていない
+
+`alpha_hi` は `alpha` を2.5倍にしているので、`conn_X1` / `conn_X2` では
+`alpha` (0.075) が `max_step` (0.05) を上回る。上限が効き始めてもおかしくないので、
+実際に当たった反復の割合を数えた。
+
+```{r tab-capped}
+MAXSTEP <- c(dens_0 = 0.05, conn_0 = 0.10, conn_X1 = 0.05, conn_X2 = 0.05, g0_1 = 0.05)
+capped <- trace %>%
+  group_by(label) %>%
+  summarise(across(all_of(paste0("step_", PARS)),
+                   ~ mean(abs(.x) >= MAXSTEP[sub("^step_", "", cur_column())] * 0.999,
+                          na.rm = TRUE)),
+            .groups = "drop")
+names(capped) <- sub("^step_", "", names(capped))
+capped %>% mutate(設定 = as.character(lab_f(label))) %>%
+  select(設定, all_of(PARS)) %>%
+  mutate(across(all_of(PARS), ~ sprintf("%.0f%%", 100 * .x))) %>%
+  arrange(match(設定, unname(DESC[LABELS]))) %>% kable()
+```
+
+上限に当たった反復の割合。**現行設定では 0%、`alpha` を上げた条件でも 1〜2% しかない。**
+
+つまり `max_step` はここでも実質的に効いていない。**`alpha_hi` が速いのは
+「学習率を上げたこと」そのものの効果**であって、上限で頭打ちになった結果ではない。
+`max_step` は発散の歯止めとして置いてあるだけで、通常は出番がない、と考えてよい。
+
+（この節は当初「上限に張り付いているのが速さの正体」と書いていたが、
+実際に数えたら 1〜2% しかなく、支持されなかったので訂正した。）
+
+```{r fig-settings-ratio, fig.height=4, fig.cap="図3. |step|/alpha の推移。現行設定は勾配が残っているのにステップが消える。リセットを入れた条件では、その時点で回復しているのが見える。"}
+sel <- c("base", "reset100", "b2_090")
+tr2 <- trace %>% filter(label %in% sel) %>%
+  mutate(ratio = pmax(1e-5, abs(step_g0_1) / 0.02))
+ggplot(tr2, aes(iter, ratio, colour = cond)) +
+  geom_line(linewidth = 0.7) +
+  scale_colour_manual(values = COL6[c(1, 4, 3)]) +
+  scale_y_log10() +
+  labs(x = "iteration", y = "|step| / alpha  (g0_1, log)",
+       title = "Resetting Adam's state restores the step size",
+       subtitle = "g0_1 shown; the jump in the reset condition is the moment m and v are cleared")
+```
+
+## 3. 結論
+
+```{r concl}
+best  <- summ %>% arrange(iter_to_0.01) %>% slice(1)
+basec <- summ %>% filter(label == "base")
+fmt <- function(x) formatC(x, format = "e", digits = 1)
+MIN_PER_ITER <- 35   # Step 2 の高速化後の実データでの目安
+days <- function(it) round(it * MIN_PER_ITER / 60 / 24, 1)
+```
+
+1. **現行設定でも最終的には到達する。** 400反復で最大誤差
+   `r fmt(basec$final_err)`、対数尤度の差は `r fmt(basec$final_ll - basec$ll_bfgs)`。
+   **「到達しない」わけではない。** ただし誤差 0.01 を切るのに
+   **`r basec$iter_to_0.01` 反復**かかっており、最良の **`r best$iter_to_0.01` 反復**
+   （`r as.character(best$cond)`）の**約 `r round(basec$iter_to_0.01 / best$iter_to_0.01, 1)` 倍**遅い。
+2. **最も効いたのは `beta2` ではなく `alpha` を上げること。**
+   `beta2` を下げるだけ（0.99）では 262 反復、リセットで 123 反復、
+   `alpha` を2.5倍にすると 111 反復。両方やっても 106 反復で、
+   `alpha` の効果がほぼすべて。
+3. **`max_step` は上げた条件でも 1〜2% しか効いておらず、速さの正体ではない。**
+   つまり素直に **`alpha` が小さすぎた**ということ。`v` による抑制
+   （`|step|/alpha` が終盤 1/1000 まで落ちる）と、`alpha` 自体の小ささが
+   重なって、移動距離を稼げていなかった。
+4. **実データでは反復数がそのまま日数になる。** 1反復 約`r MIN_PER_ITER`分として、
+   `r basec$iter_to_0.01` 反復 = 約 **`r days(basec$iter_to_0.01)` 日**、
+   `r best$iter_to_0.01` 反復 = 約 **`r days(best$iter_to_0.01)` 日**。
+
+### `SGD_bear_20260909.R` への反映（提案）
+
+- **`ALPHA` を上げる。目安は2倍。** これが効果のほぼすべてだった
+- `MAX_STEP` も同じ倍率で上げておく。上限は実測で 1〜2% しか効いていないので
+  速さには寄与しないが、**発散したときの歯止めとしては残しておきたい**。
+  `alpha` より下に置くと、その歯止めが常時作動する状態になってしまう
+- `BETA2` を 0.99 にするのは補助。単独では効きが薄いが、併用して害は無かった
+- **合成データは素直な問題なので、実データで同じ倍率が安全とは限らない。**
+  発散したら `max_step` が最後の歯止めになる。まず小さい `MAX_ITER` で
+  様子を見てから増やすこと（チェックポイントがあるのでやり直しにならない）
+- **`INIT_MODE = "transformed"` は引き続き正しい。** 距離が短いうえ、
+  序盤に大きな勾配が出ないので `v` が膨らまず、失速そのものが起きにくい
+
+### この実験の限界
+
+- 合成データは ncell = 400、検出254個体。**実データ（ncell = 8497）とは
+  尤度曲面の性質が違う可能性がある**
+- `sampling_rate = 1.0` の完全バッチでしか試していない。ミニバッチノイズが
+  入ると、大きい `alpha` はノイズ球を広げる方向に働く（Step 1 の図2を参照）
+- 条件ごとに1回ずつしか走らせていない。`simulate()` が再現しないので
+  データを変えた反復試行はしていない
+
+*数値と図は `results/adam_settings_*.csv` と `results/bear_run_20260904_*.csv` から生成している。*

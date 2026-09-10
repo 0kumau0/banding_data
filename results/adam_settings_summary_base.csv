@@ -1,0 +1,2 @@
+"label","beta2","reset_every","alpha_mult","sec_per_iter","iter_to_0.05","iter_to_0.02","iter_to_0.01","final_err","final_ll","ll_bfgs","final_step_ratio"
+"base",0.999,NA,1,13.4337683522701,151,261,326,0.00405303220104347,-417.636502205255,-417.635836851951,0.00122766673700344
