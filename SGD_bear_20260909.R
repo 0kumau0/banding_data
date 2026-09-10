@@ -18,18 +18,32 @@
 #
 #   grid_cov_std <- grid_cov %>% mutate(agri = (agri-mu_agri)/sd_agri,
 #                                       agri = (agri-mu_agri)/sd_agri)
-#                                       ^^^^ 2回とも agri。wtr が標準化されない
+#                                       ^^^^ 2回とも agri
 #
-# mu_wtr / sd_wtr はその直前で計算されているのに使われていなかった。
-# 結果として wtr だけ生スケールのまま C ~ agri + wtr に入っていた。
+# **dplyr の mutate は式を順番に評価し、後の式は前の式で更新された列を見る。**
+# したがって agri には標準化が2回かかり、wtr は生のまま残る。
+# つまり **どちらの共変量も標準化されていなかった**（examples/verify_old_scaling.R
+# で実証）。
 #
-# 実害は推定値ではなく最適化の幾何に出る。sd(wtr) = 0.0724 と小さいので、
-# 同じ効果を表すのに conn_wtr は 1/0.0724 ≒ 14 倍の大きさを持つ必要がある。
-# 実際 optim 解は conn_agri = 0.361 に対し conn_wtr = -6.411 だった。
+#   旧モデルが渡していた列        mean      sd
+#     agri（2回標準化）          -0.4922   3.6880   ← 1 ではない
+#     wtr （生のまま）            0.0142   0.0724
 #
-# Adam の1反復あたりの移動は高々 alpha（0.02〜0.03）なので、初期値 -1 から
-# -6.4 まで 5.41 も動くには 300 反復ほどかかる。1反復 2200 秒なので約1週間。
-# 標準化すればこの距離が 0 -> -0.464 の 0.46 に縮む（約12分の1）。
+# 実害は推定値ではなく最適化の幾何に出る。同じ効果を表すのに必要な係数の
+# 大きさが共変量ごとに桁違いになり、Adam の1反復あたりの移動は
+# 高々 alpha（0.02〜0.03）なので、遠い係数ほど到達に反復数がかかる。
+# 実際 optim 解は conn_agri = 0.361（sd 3.69 の列に対する係数）、
+# conn_wtr = -6.411（sd 0.072 の列に対する係数）だった。
+#
+# 正しく標準化すると解は conn_agri = 1.332 / conn_wtr = -0.464 になり、
+# **agri の効果のほうが約3倍大きい**ことが見える。旧表示の 0.361 と 6.411 を
+# そのまま比べると、大小関係を取り違える。
+#
+# 2026-09-10 追記: 当初この節を「wtr が標準化されない」とだけ書き、agri は
+# 正しく標準化されている前提で座標変換の式を立てた。その式で解析機の検算が
+# 落ちた（loglf = -704.207 に対し旧記録 -685.520、差 -18.69）。
+# dplyr の逐次評価を見落としていたのが原因。式は修正済み。
+# **検算が数日ぶんの計算を守った。**
 #
 # 旧実行のトレース（630反復）を解析して分かった注意点が2つある。
 #
@@ -43,6 +57,11 @@
 # 見込める短縮は 300 反復前後 -> 230 反復前後、2〜3割。
 # 標準化を直す本当の価値は、係数ごとの alpha / max_step の手調整が要らなくなること、
 # および係数が解釈可能なスケールになることのほう。
+#
+# 速度は別の設定で稼げる。合成データでの比較（reports/adam_convergence_report.md）
+# では **alpha を2倍にするのが最も効いた**（誤差 0.01 到達までの反復数が
+# 326 -> 111）。beta2 を下げるのは補助。max_step は 1〜2% しか効いておらず、
+# 発散の歯止めとしてのみ意味がある。
 #
 # もう一点。旧実行では 451 反復以降、**勾配の符号が一貫しているのにステップが
 # alpha の 1/1000 まで落ちていた。**「収束して止まった」のではなく
@@ -194,6 +213,25 @@ OLD_LOGLIK <- -685.5202223
 # ===========================================================================
 
 t_start <- Sys.time()
+
+## --- コマンドラインからの上書き --------------------------------------------
+# 試すたびにこのファイルを書き換えずに済むようにしておく。
+# 設定の定義がすべて済んだ後に置くこと（前に置くと未定義の変数を触る）。
+#
+#   Rscript SGD_bear_20260909.R --dry-run           # 合成データで流れだけ確認
+#   Rscript SGD_bear_20260909.R --no-sgd            # 検算と BFGS だけ
+#   Rscript SGD_bear_20260909.R --max-iter 50
+#   Rscript SGD_bear_20260909.R --init far
+.args <- commandArgs(trailingOnly = TRUE)
+.opt <- function(flag, default = NULL) {
+  i <- which(.args == flag)
+  if (length(i) && length(.args) > i[1]) .args[i[1] + 1L] else default
+}
+if ("--dry-run"  %in% .args) DRY_RUN   <- TRUE
+if ("--no-sgd"   %in% .args) RUN_SGD   <- FALSE
+if ("--no-optim" %in% .args) RUN_OPTIM <- FALSE
+if (!is.null(.opt("--max-iter"))) MAX_ITER  <- as.integer(.opt("--max-iter"))
+if (!is.null(.opt("--init")))     INIT_MODE <- .opt("--init")
 
 stopifnot(INIT_MODE %in% c("far", "transformed"))
 
@@ -406,21 +444,24 @@ stopifnot(identical(PAR_NAMES, names(OLD_PAR)))
 # つまりこの修正はモデルを変えない厳密な再パラメータ化。
 # したがって変換した点での対数尤度は旧解のそれと一致しなければならない。
 
-to_std <- function(p) {                     # 旧（wtr 生）-> 新（wtr 標準化）
-  q <- p
-  q["conn_wtr"] <- p["conn_wtr"] * COV_SD["wtr"]
-  q["conn_0"]   <- p["conn_0"] + p["conn_wtr"] * COV_MU["wtr"]
-  q
+## 旧 -> 新。agri の 1/sd_a と wtr の sd_w の両方を掛け直し、切片で吸収する。
+to_std <- function(p) {
+  c(dens_0    = unname(p["dens_0"]),
+    conn_0    = unname(p["conn_0"]
+                       - p["conn_agri"] * COV_MU["agri"] / COV_SD["agri"]
+                       + p["conn_wtr"]  * COV_MU["wtr"]),
+    conn_agri = unname(p["conn_agri"] / COV_SD["agri"]),
+    conn_wtr  = unname(p["conn_wtr"]  * COV_SD["wtr"]),
+    g0_1      = unname(p["g0_1"]))
 }
 
-to_raw <- function(q) {                     # 新 -> 生スケール（両共変量とも生）
-  b_agri <- q["conn_agri"] / COV_SD["agri"]
-  b_wtr  <- q["conn_wtr"]  / COV_SD["wtr"]
+## 新 -> 生スケール（agri も wtr も生の値に対する係数）
+to_raw <- function(q) {
   c(dens_0    = unname(q["dens_0"]),
     conn_0    = unname(q["conn_0"] - q["conn_agri"] * COV_MU["agri"] / COV_SD["agri"]
                                    - q["conn_wtr"]  * COV_MU["wtr"]  / COV_SD["wtr"]),
-    conn_agri = unname(b_agri),
-    conn_wtr  = unname(b_wtr),
+    conn_agri = unname(q["conn_agri"] / COV_SD["agri"]),
+    conn_wtr  = unname(q["conn_wtr"]  / COV_SD["wtr"]),
     g0_1      = unname(q["g0_1"]))
 }
 
@@ -687,10 +728,15 @@ if (!is.null(final_par)) {
                     `Adam-SGD` = to_raw(final_par),
                     `旧解`     = to_raw(OLD_PAR_STD)), 5))
   say("旧解の行の conn_wtr は ", sprintf("%.4f", OLD_PAR["conn_wtr"]),
-      " に一致するはず（旧モデルでは wtr が生スケールだったため）。")
-  say("conn_agri は旧モデルでも標準化済みだったので、旧解の行の値は ",
-      sprintf("%.4f", OLD_PAR["conn_agri"] / COV_SD["agri"]),
-      " になる（元の表示 ", sprintf("%.4f", OLD_PAR["conn_agri"]), " とは基底が違う）。")
+      " に一致するはず（旧モデルでは wtr が生スケールだったため）。往復の検算になる。")
+  say("conn_agri は違う。旧モデルの agri は**2回**標準化されており（sd が 1 ではなく ",
+      sprintf("%.3f", 1 / COV_SD["agri"]), "）、",
+      "生スケールに直すと ", sprintf("%.4f", OLD_PAR["conn_agri"] / COV_SD["agri"]^2),
+      " になる。元の表示 ", sprintf("%.4f", OLD_PAR["conn_agri"]), " とは基底が違う。")
+  say("標準化スケールでの効果は agri ",
+      sprintf("%.4f", ref_par["conn_agri"]), " / wtr ",
+      sprintf("%.4f", ref_par["conn_wtr"]),
+      " 。旧表示の 0.361 と -6.411 をそのまま比べると大小関係を取り違える。")
 }
 
 

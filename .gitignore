@@ -18,3 +18,11 @@ results/log_*.txt
 SGD_bear_*_checkpoint.rds
 SGD_bear_*_optim.rds
 SGD_bear_*_dryrun_*
+
+# tests/machine_check.R の出力。ホスト名・型番・イベントログの本文が入るので
+# GitHub に上げない（2026-09-10 の指示）。編集機へは手で渡すこと。
+results/machine_check_*.md
+
+# 実行ログにも環境依存の情報が入りうるので上げない
+SGD_bear_*_log.txt
+SGD_bear_*_run.log
