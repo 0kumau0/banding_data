@@ -252,6 +252,23 @@ if (!is.null(.opt("--beta2")))    BETA2     <- as.numeric(.opt("--beta2"))
 
 RUN_TAG <- .opt("--tag", "")
 
+# 未知の引数は黙って無視せず、止める。
+# 古い版のスクリプトに新しいフラグを渡すと、指定したつもりの設定が効かないまま
+# 何時間も走ることになる（2026-09-11、--no-hessian でこれが起きた）。
+.flags_noarg <- c("--dry-run", "--no-sgd", "--no-optim", "--no-hessian")
+.flags_arg   <- c("--max-iter", "--init", "--beta2", "--tag",
+                  "--alpha-mult", "--threads")
+.known <- character(0)
+for (f in .flags_arg) {
+  i <- which(.args == f)
+  if (length(i)) .known <- c(.known, .args[i[1]], .args[i[1] + 1L])
+}
+.unknown <- setdiff(.args, c(.flags_noarg, .known))
+if (length(.unknown))
+  stop("知らない引数です: ", paste(.unknown, collapse = " "),
+       "\n使えるのは: ", paste(c(.flags_noarg, .flags_arg), collapse = " "),
+       "\nスクリプトが古い可能性があります。git pull を確認してください。")
+
 # alpha と max_step をまとめて倍率で動かす。
 # 合成データでの比較（reports/adam_convergence_report.md）では、alpha を上げるのが
 # 最も効いた（誤差 0.01 到達までの反復数が 326 -> 111）。max_step も同率で上げないと、
