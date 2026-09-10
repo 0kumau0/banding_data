@@ -135,8 +135,8 @@ BEAR_DIR <- "../../ADCR/doi_10_5061_dryad_ksn02v7bq__v20250117"
 # BFGS 参照解は初期値に依存しないので共通。
 TAG        <- "SGD_bear_20260909"
 OPTIM_FILE <- paste0(TAG, "_optim.rds")       # BFGS 参照解（一度作れば再利用）
-LOG_FILE   <- paste0(TAG, "_log.txt")
-# CKPT_FILE と RESULT_FILE は INIT_MODE 確定後に組み立てる（下の「1. 準備」）
+# LOG_FILE / CKPT_FILE / RESULT_FILE は INIT_MODE と --tag が確定してから
+# 組み立てる（下の「1. 準備」）。並列実行で衝突させないため。
 
 ## --- 実行する段階 ----------------------------------------------------------
 RUN_CHECK <- TRUE     # 2. 旧解との照合。安いので必ず通すこと
@@ -229,6 +229,14 @@ t_start <- Sys.time()
 #   Rscript SGD_bear_20260909.R --no-sgd               # ＋ヘッセ行列（1.5時間ほど）
 #   Rscript SGD_bear_20260909.R --max-iter 50
 #   Rscript SGD_bear_20260909.R --init far
+#
+# 複数条件を同時に走らせるとき:
+#
+#   Rscript SGD_bear_20260909.R --init far --tag A --alpha-mult 1 --threads 16
+#   Rscript SGD_bear_20260909.R --init far --tag B --alpha-mult 2 --threads 16
+#
+# **--tag を付けないとチェックポイントとログが衝突して互いを壊す。**
+# BFGS 参照解 (OPTIM_FILE) だけは設定に依らないので共有する。
 .args <- commandArgs(trailingOnly = TRUE)
 .opt <- function(flag, default = NULL) {
   i <- which(.args == flag)
@@ -240,8 +248,24 @@ if ("--no-optim"    %in% .args) RUN_OPTIM <- FALSE
 if ("--no-hessian"  %in% .args) HESSIAN   <- FALSE
 if (!is.null(.opt("--max-iter"))) MAX_ITER  <- as.integer(.opt("--max-iter"))
 if (!is.null(.opt("--init")))     INIT_MODE <- .opt("--init")
+if (!is.null(.opt("--beta2")))    BETA2     <- as.numeric(.opt("--beta2"))
 
-stopifnot(INIT_MODE %in% c("far", "transformed"))
+RUN_TAG <- .opt("--tag", "")
+
+# alpha と max_step をまとめて倍率で動かす。
+# 合成データでの比較（reports/adam_convergence_report.md）では、alpha を上げるのが
+# 最も効いた（誤差 0.01 到達までの反復数が 326 -> 111）。max_step も同率で上げないと、
+# 発散の歯止めが常時作動する状態になってしまう。
+ALPHA_MULT <- as.numeric(.opt("--alpha-mult", "1"))
+
+# OpenMP のスレッド数。複数条件を並列に走らせるときは分け合う。
+# secrad.r を source する前に設定しないと効かない。
+if (!is.null(.opt("--threads")))
+  Sys.setenv(OMP_NUM_THREADS = .opt("--threads"))
+
+stopifnot(INIT_MODE %in% c("far", "transformed"),
+          is.finite(ALPHA_MULT), ALPHA_MULT > 0,
+          grepl("^[A-Za-z0-9_-]*$", RUN_TAG))
 
 # DRY_RUN の上書きは sink より前に済ませる。出力ファイル名を別にして
 # 本番の結果とログを上書きしないため。
@@ -254,11 +278,15 @@ if (DRY_RUN) {
   OPTIM_MAXIT <- 10L
   TAG <- paste0(TAG, "_dryrun")
   OPTIM_FILE <- paste0(TAG, "_optim.rds")
-  LOG_FILE   <- paste0(TAG, "_log.txt")
 }
 
-CKPT_FILE   <- paste0(TAG, "_", INIT_MODE, "_checkpoint.rds")
-RESULT_FILE <- paste0(TAG, "_", INIT_MODE, "_result.RData")
+# 走らせる条件ごとに一意な接尾辞。初期値と --tag で決まる。
+# **BFGS 参照解 (OPTIM_FILE) には付けない。** 設定に依らないので共有してよく、
+# 共有すれば並列実行でも1回計算するだけで済む。
+RUN_SUFFIX  <- paste0(INIT_MODE, if (nzchar(RUN_TAG)) paste0("_", RUN_TAG) else "")
+CKPT_FILE   <- paste0(TAG, "_", RUN_SUFFIX, "_checkpoint.rds")
+RESULT_FILE <- paste0(TAG, "_", RUN_SUFFIX, "_result.RData")
+LOG_FILE    <- paste0(TAG, "_", RUN_SUFFIX, "_log.txt")
 
 # 画面と LOG_FILE の両方に出す。数日かかるので記録が残らないと追えない。
 # sink が拾うのは標準出力だけ。警告とエラーは端末にしか出ないので、
@@ -616,8 +644,10 @@ if (RUN_SGD) {
     v[hit] <- overrides[hit]
     v
   }
-  alpha_vec <- by_par(ALPHA_DEFAULT,    ALPHA_BY_PAR)
-  max_step  <- by_par(MAX_STEP_DEFAULT, MAX_STEP_BY_PAR)
+  # alpha と max_step は同率で動かす。片方だけ上げると、上げなかったほうが
+  # 常時作動する制約になってしまう。
+  alpha_vec <- by_par(ALPHA_DEFAULT,    ALPHA_BY_PAR)    * ALPHA_MULT
+  max_step  <- by_par(MAX_STEP_DEFAULT, MAX_STEP_BY_PAR) * ALPHA_MULT
 
   ## --- 状態の初期化または再開 --------------------------------------------
 
@@ -640,10 +670,17 @@ if (RUN_SGD) {
     ck <- readRDS(CKPT_FILE)
     if (!identical(ck$par_names, PAR_NAMES))
       stop("チェックポイントのパラメータ名が一致しません。CKPT_FILE を消すか確認を。")
-    # ファイル名に INIT_MODE が入っているので普通は起きないが、念のため。
+    # ファイル名に INIT_MODE と --tag が入っているので普通は起きないが、念のため。
     if (!is.null(ck$init_mode) && !identical(ck$init_mode, INIT_MODE))
       stop("チェックポイントの INIT_MODE (", ck$init_mode, ") が現在の設定 (",
            INIT_MODE, ") と違います。別の初期値の途中経過から再開しかけています。")
+    # 学習率が違うまま再開すると、トレースの前半と後半で別の設定が混ざる。
+    if (!is.null(ck$alpha_mult) && !isTRUE(all.equal(ck$alpha_mult, ALPHA_MULT)))
+      stop("チェックポイントの alpha_mult (", ck$alpha_mult, ") が現在の設定 (",
+           ALPHA_MULT, ") と違います。--tag を分けて別の run にしてください。")
+    if (!is.null(ck$beta2) && !isTRUE(all.equal(ck$beta2, BETA2)))
+      stop("チェックポイントの beta2 (", ck$beta2, ") が現在の設定 (",
+           BETA2, ") と違います。--tag を分けて別の run にしてください。")
     current_par <- ck$current_par; m <- ck$m; v <- ck$v
     iter_done <- ck$iter_done
     n <- min(iter_done, MAX_ITER)
@@ -657,12 +694,17 @@ if (RUN_SGD) {
     print(round(current_par, 5))
   }
 
-  say("sampling_rate = ", SAMPLING_RATE, " / alpha = ",
-      paste(sprintf("%s:%.3f", PAR_NAMES, alpha_vec), collapse = " "))
+  say("条件: tag=", if (nzchar(RUN_TAG)) RUN_TAG else "(なし)",
+      " / init=", INIT_MODE, " / alpha_mult=", ALPHA_MULT,
+      " / beta2=", BETA2, " / sampling_rate=", SAMPLING_RATE,
+      " / OMP_NUM_THREADS=", Sys.getenv("OMP_NUM_THREADS", "(既定)"))
+  say("alpha = ", paste(sprintf("%s:%.3f", PAR_NAMES, alpha_vec), collapse = " "))
   say("max_step = ", paste(sprintf("%s:%.3f", PAR_NAMES, max_step), collapse = " "))
+  say("出力: ", CKPT_FILE, " / ", RESULT_FILE)
 
   save_ckpt <- function(iter) {
     saveRDS(list(par_names = PAR_NAMES, init_mode = INIT_MODE,
+                 run_tag = RUN_TAG, alpha_mult = ALPHA_MULT, beta2 = BETA2,
                  current_par = current_par, m = m, v = v,
                  iter_done = iter, trace_par = trace_par, trace_grad = trace_grad,
                  trace_step = trace_step, trace_ll = trace_ll,
@@ -766,6 +808,7 @@ if (!is.null(final_par)) {
 save(secrad_res, ref_par, final_par, trace_par, trace_ll, trace_grad, trace_step,
      iter_done, time_adam_sgd, alpha_vec, max_step, sample_size,
      SAMPLING_RATE, BETA1, BETA2, EPS_ADAM, GRAD_EPS, INIT_MODE,
+     RUN_TAG, ALPHA_MULT, HESSIAN,
      COV_MU, COV_SD, OLD_PAR, OLD_PAR_STD, OLD_LOGLIK,
      multi_ids, single_ids, n_detected,
      file = RESULT_FILE)
