@@ -156,6 +156,12 @@ CHECK_TOL <- 0.1
 # BFGS の最大反復数。変換した旧解から出発するのですぐ終わるはず。
 OPTIM_MAXIT <- 200
 
+# optim の収束後に数値ヘッセ行列を計算するか。標準誤差を出すのに要る。
+# **ただし optim 本体よりずっと高い。** loglf 1回が約3分、必要な評価回数が
+# npar*(npar+1) = 30 回なので、クマデータでは 1.5 時間ほどかかる。
+# 収束の確認だけが目的なら FALSE でよい（後から別に計算できる）。
+HESSIAN <- TRUE
+
 ## --- Adam ------------------------------------------------------------------
 # 到達目標の総反復数。再開すればこの数まで回すので、**先に決め打ちしなくてよい。**
 # まず 20 で回して1反復あたりの時間を見てから増やすこと（冒頭の「推奨手順」）。
@@ -218,8 +224,9 @@ t_start <- Sys.time()
 # 試すたびにこのファイルを書き換えずに済むようにしておく。
 # 設定の定義がすべて済んだ後に置くこと（前に置くと未定義の変数を触る）。
 #
-#   Rscript SGD_bear_20260909.R --dry-run           # 合成データで流れだけ確認
-#   Rscript SGD_bear_20260909.R --no-sgd            # 検算と BFGS だけ
+#   Rscript SGD_bear_20260909.R --dry-run              # 合成データで流れだけ確認
+#   Rscript SGD_bear_20260909.R --no-sgd --no-hessian  # 検算と BFGS だけ、数分
+#   Rscript SGD_bear_20260909.R --no-sgd               # ＋ヘッセ行列（1.5時間ほど）
 #   Rscript SGD_bear_20260909.R --max-iter 50
 #   Rscript SGD_bear_20260909.R --init far
 .args <- commandArgs(trailingOnly = TRUE)
@@ -227,9 +234,10 @@ t_start <- Sys.time()
   i <- which(.args == flag)
   if (length(i) && length(.args) > i[1]) .args[i[1] + 1L] else default
 }
-if ("--dry-run"  %in% .args) DRY_RUN   <- TRUE
-if ("--no-sgd"   %in% .args) RUN_SGD   <- FALSE
-if ("--no-optim" %in% .args) RUN_OPTIM <- FALSE
+if ("--dry-run"     %in% .args) DRY_RUN   <- TRUE
+if ("--no-sgd"      %in% .args) RUN_SGD   <- FALSE
+if ("--no-optim"    %in% .args) RUN_OPTIM <- FALSE
+if ("--no-hessian"  %in% .args) HESSIAN   <- FALSE
 if (!is.null(.opt("--max-iter"))) MAX_ITER  <- as.integer(.opt("--max-iter"))
 if (!is.null(.opt("--init")))     INIT_MODE <- .opt("--init")
 
@@ -470,9 +478,16 @@ OLD_PAR_STD <- to_std(OLD_PAR)
 say("== 旧解の座標変換 ==")
 print(round(rbind(`旧（wtr 生スケール）` = OLD_PAR,
                   `新（wtr 標準化）`     = OLD_PAR_STD), 6))
-say("conn_wtr が ", sprintf("%.4f -> %.4f", OLD_PAR["conn_wtr"], OLD_PAR_STD["conn_wtr"]),
-    " になり、conn_agri (", sprintf("%.4f", OLD_PAR["conn_agri"]), ") と同程度になる。")
-say("これが Adam を苦しめていたスケール差の正体。")
+say("conn_wtr ", sprintf("%.4f -> %.4f", OLD_PAR["conn_wtr"], OLD_PAR_STD["conn_wtr"]),
+    " / conn_agri ", sprintf("%.4f -> %.4f", OLD_PAR["conn_agri"], OLD_PAR_STD["conn_agri"]),
+    "。旧モデルでは agri が2回標準化（sd ",
+    sprintf("%.2f", 1 / COV_SD["agri"]), "）、wtr が生（sd ",
+    sprintf("%.4f", COV_SD["wtr"]), "）だったための桁違い。")
+say("標準化後は agri ", sprintf("%.3f", OLD_PAR_STD["conn_agri"]),
+    " / wtr ", sprintf("%.3f", OLD_PAR_STD["conn_wtr"]),
+    " で、**agri の効果のほうが約",
+    sprintf("%.1f", abs(OLD_PAR_STD["conn_agri"] / OLD_PAR_STD["conn_wtr"])),
+    "倍大きい**。旧表示の 0.361 と -6.411 を並べると大小関係を取り違える。")
 
 if (RUN_CHECK) {
   say("変換した点で対数尤度を評価中（1回で数分かかる）...")
@@ -510,10 +525,18 @@ if (RUN_OPTIM) {
   } else {
     say("== BFGS 参照解を計算中 ==")
     say("変換した旧解から出発するので、反復数は少ないはず。")
+    if (HESSIAN) {
+      say("**hessian = TRUE。optim の収束後に数値ヘッセ行列を計算する。**")
+      if (is.finite(sec_per_loglf))
+        say(sprintf("  loglf 1回 %.0f秒 × 約%d回 ＝ 目安 %.1f時間。",
+                    sec_per_loglf, length(PAR_NAMES) * (length(PAR_NAMES) + 1L),
+                    sec_per_loglf * length(PAR_NAMES) * (length(PAR_NAMES) + 1L) / 3600))
+      say("  標準誤差が要らないなら --no-hessian で飛ばせる（後から計算してもよい）。")
+    }
     t0 <- Sys.time()
     secrad_res <- optim(OLD_PAR_STD, secrad_obj$loglf, method = "BFGS",
                         control = list(maxit = OPTIM_MAXIT, trace = 1, REPORT = 1),
-                        loglfscale = -1, hessian = TRUE)
+                        loglfscale = -1, hessian = HESSIAN)
     say(sprintf("%.1f分 / convergence = %d / logL = %.6f",
                 as.numeric(difftime(Sys.time(), t0, units = "mins")),
                 secrad_res$convergence, -secrad_res$value))
