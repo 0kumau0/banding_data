@@ -42,7 +42,19 @@
 ## --- 読み込むもの -----------------------------------------------------------
 SOURCEPATH <- "adcrsgd/secrad.r"      # 尤度エンジン（sgd = TRUE 対応版）
 UTILPATH   <- "adcrsgd/sgd_utils.R"   # advdiff キャッシュ共有 + grad_cachewise
-RESULTFILE <- "results/sgd_simulation_result.RData"
+
+## --- 結果の保存先 -----------------------------------------------------------
+#
+# **実行するたびに別ファイルへ保存する。固定名にしてはいけない。**
+#
+# このシミュレーションは set.seed を固定しても再現しない（§2 の注意を参照。
+# secrad.r の C++ 側が std::random_device で独自に乱数を初期化するため）。
+# つまり同じファイル名で上書きすると、**前回の結果は二度と復元できない**。
+# 「再現できないから保存する」のに上書きしたら意味がない。
+#
+# RUN_TAG に短い文字列を入れると、ファイル名の先頭に付いて後から見分けやすい。
+# 例: RUN_TAG <- "agri_strong" → results/sgd_simulation_agri_strong_20260915_143022.RData
+RUN_TAG <- ""
 
 ## --- パラメータ名 -----------------------------------------------------------
 # モデルが D ~ 1 / C ~ agri + wtr / A ~ 0 なので、この5つで固定。
@@ -55,7 +67,20 @@ CELL_SIZE  <- 1         # セルの一辺。座標の単位（実データでは
 CELL_AREA  <- 1         # セルの面積。密度の単位を決める
 
 ## --- 調査デザイン -----------------------------------------------------------
-TRAP_AT    <- c(3, 7, 11, 15, 18)  # 検出器を置く座標。x,y の総当たりで 25 基
+# 検出器は格子状に置く。TRAP_COORD は**片方の軸の座標**で、
+# x と y の総当たり（全組み合わせ）が検出器の位置になる。
+#
+#   TRAP_COORD が n 個  →  検出器は n^2 基
+#   既定は 5 個なので 5 x 5 = 25 基（NX=20 の 400 セルに対して 6.3%）
+#
+#   y=18  ·  ·  ·  ·  ·
+#   y=15  ·  ·  ·  ·  ·      · = 検出器
+#   y=11  ·  ·  ·  ·  ·
+#   y=7   ·  ·  ·  ·  ·
+#   y=3   ·  ·  ·  ·  ·
+#        x=3  7  11 15 18
+TRAP_COORD <- c(3, 7, 11, 15, 18)
+
 EFFORT     <- 200       # 検出器あたりの努力量（実データの effort に相当）
 N_OCCASION <- 1         # 調査機会の数。実データ版も実質1
 
@@ -110,7 +135,17 @@ RUN_HESSIAN  <- TRUE    # optim でヘッセ行列（＝標準誤差）も出す
 OPTIM_MAXIT  <- 1000
 REPORT_EVERY <- 5       # 何反復ごとに途中経過を表示するか
 
-## --- 設定の整合性チェック（ここから下は触らない）---------------------------
+## --- 保存先の組み立て（ここから下は触らない）-------------------------------
+# 秒まで入れるので、実行ごとに必ず別ファイルになる。
+# secrad.r のコンパイルだけで約25秒かかるため、同じ秒に2回走ることはない。
+RUN_STAMP  <- format(Sys.time(), "%Y%m%d_%H%M%S")
+RESULTFILE <- file.path(
+  "results",
+  sprintf("sgd_simulation_%s%s.RData",
+          if (nzchar(RUN_TAG)) paste0(RUN_TAG, "_") else "",
+          RUN_STAMP))
+
+## --- 設定の整合性チェック ---------------------------------------------------
 stopifnot(
   identical(names(ALPHA),    PAR_NAMES),
   identical(names(MAX_STEP), PAR_NAMES),
@@ -162,11 +197,14 @@ wtr  <- as.numeric(scale(cos(xcoord / 5) * sin(ycoord / 3)))
 grid_cov <- data.frame(agri = agri, wtr = wtr)
 
 ## 検出器の位置 → セル番号
-trapx <- rep(TRAP_AT, times = length(TRAP_AT)) * CELL_SIZE
-trapy <- rep(TRAP_AT, each  = length(TRAP_AT)) * CELL_SIZE
-effort_loc <- match(paste(trapx, trapy), paste(xcoord, ycoord))
-stopifnot(!any(is.na(effort_loc)))   # TRAP_AT が格子の外だと NA になる
-ntrap <- length(effort_loc)
+## expand.grid が x と y の総当たりを作る（5 値 × 5 値 = 25 行）。
+traps <- expand.grid(x = TRAP_COORD * CELL_SIZE,
+                     y = TRAP_COORD * CELL_SIZE)
+ntrap <- nrow(traps)
+
+effort_loc <- match(paste(traps$x, traps$y), paste(xcoord, ycoord))
+if (any(is.na(effort_loc)))
+  stop("検出器が格子の外にあります。TRAP_COORD は 1〜", NX, " の範囲で指定してください。")
 
 simdata <- secrad_data$new(coords     = cbind(x = xcoord, y = ycoord),
                            area       = rep(CELL_AREA, ncell),
@@ -440,9 +478,28 @@ if (!is.null(ref_par)) {
 }
 
 dir.create("results", showWarnings = FALSE)
-save(secrad_res, ref_par, true_par, final_par,
-     trace_par, trace_ll, trace_grad, trace_step, iter_done, time_adam,
-     SAMPLING_RATE, ALPHA, MAX_STEP, BETA1, BETA2, EPS_ADAM, GRAD_EPS,
-     INIT, NX, ncell, n_detected, multi_ids, single_ids,
-     file = RESULTFILE)
+
+## **データそのものも保存する。** trace だけ残しても、元のデータが無ければ
+## 「別の最適化を同じデータで試す」「BFGS を回し直す」ができない。
+## 再現できない以上、ここで残さなければその実行は永久に失われる。
+## detect も共変量も小さい（数十 KB）ので、惜しむ理由がない。
+trueind <- simdata$trueind            # 検出されなかった個体も含む真の配置
+
+save(
+  ## --- データ（これが無いと後から何もできない）---
+  detect, grid_cov, xcoord, ycoord, effort_loc, trueind,
+  ## --- 推定結果 ---
+  secrad_res, ref_par, true_par, final_par,
+  ## --- 経過の記録 ---
+  trace_par, trace_ll, trace_grad, trace_step, iter_done, time_adam,
+  ## --- 再現に要る設定 ---
+  RUN_TAG, RUN_STAMP, SEED, NX, ncell, CELL_SIZE, CELL_AREA,
+  TRAP_COORD, EFFORT, N_OCCASION, STEPSPERTIME, STEPAD, TIMEBURNIN,
+  TRUE_DENS, TRUE_CONN, TRUE_ADV, TRUE_G0,
+  SAMPLING_RATE, ALPHA, MAX_STEP, BETA1, BETA2, EPS_ADAM, GRAD_EPS, INIT,
+  ## --- 個体の内訳 ---
+  n_detected, multi_ids, single_ids,
+  file = RESULTFILE)
+
 cat("\n保存: ", RESULTFILE, "\n", sep = "")
+cat("（実行ごとに別ファイル。過去の結果は上書きされません）\n")
