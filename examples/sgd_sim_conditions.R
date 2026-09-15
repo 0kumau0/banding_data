@@ -44,6 +44,34 @@
 # 0. 設定  ── 触るのはこのブロックだけで済むようにしてある
 # ===========================================================================
 
+## --- 引数 -------------------------------------------------------------------
+#   --testbed A|B   A = 複数回:単回 がほぼ半々（最適化器の検証向き）
+#                   B = 1:10 に偏らせる（間引きの検証向き。足環データの比率）
+#   --sweep rate|adam
+#                   rate = sampling_rate を振る
+#                   adam = rate=1.0 に固定して beta2 と alpha を振る
+.args <- commandArgs(trailingOnly = TRUE)
+.opt <- function(flag, default) {
+  i <- match(flag, .args)
+  if (is.na(i) || i == length(.args)) default else .args[i + 1L]
+}
+#   --beta2 / --alpha-mult
+#                   rate を振るとき（--sweep rate）の Adam 設定を上書きする。
+#                   2026-09-15 の検証台A の探索では beta2=0.99 / alpha x4 が
+#                   BFGS 解に小数4桁まで一致した（距離/SE = 0.0012）。
+#                   既定の 0.999 / x1 は**失速することが分かっている**ので、
+#                   間引きを検証するときは勝った設定を渡すこと。
+.bad <- setdiff(grep("^--", .args, value = TRUE),
+                c("--testbed", "--sweep", "--tag", "--beta2", "--alpha-mult"))
+if (length(.bad)) stop("知らない引数: ", paste(.bad, collapse = " "))
+
+TESTBED    <- toupper(.opt("--testbed", "B"))
+SWEEP      <- tolower(.opt("--sweep",   "rate"))
+RATE_BETA2 <- as.numeric(.opt("--beta2",      "0.999"))
+RATE_AMULT <- as.numeric(.opt("--alpha-mult", "1"))
+stopifnot(TESTBED %in% c("A", "B"), SWEEP %in% c("rate", "adam"),
+          RATE_BETA2 > 0, RATE_BETA2 < 1, RATE_AMULT > 0)
+
 ## --- 読み込むもの -----------------------------------------------------------
 SOURCEPATH <- "adcrsgd/secrad.r"      # 尤度エンジン（sgd = TRUE 対応版）
 UTILPATH   <- "adcrsgd/sgd_utils.R"   # advdiff キャッシュ共有 + grad_cachewise
@@ -81,10 +109,17 @@ N_OCCASION <- 1         # 調査機会の数
 #   22 : 211  →  22 + 21 = 43 / 233     →  **21倍速**
 #
 # そこで検出率を下げ（再捕獲が減る）密度を上げる（個体が増える）。A とは逆向き。
-TRUE_DENS  <- 2.0       # log 密度。exp(2) * 400セル ≒ 2960 個体
+#   A: 検出 100 前後（複数回 42 / 単回 58 ＝ ほぼ半々）。最適化器の検証向き
+#   B: 検出 190 前後（複数回 18 / 単回 170 ＝ 1:9.4）。間引きの検証向き
+if (TESTBED == "A") {
+  TRUE_DENS <- -0.5     # exp(-0.5) * 400セル ≒ 240 個体
+  TRUE_G0   <- -3.0
+} else {
+  TRUE_DENS <-  2.0     # exp(2) * 400セル ≒ 2960 個体
+  TRUE_G0   <- -5.0
+}
 TRUE_CONN  <- c(conn_0 = -1.0, conn_agri = 0.6, conn_wtr = -0.5)
 TRUE_ADV   <- -0.5      # log 移流。**推定モデルは A ~ 0 なので推定しない**
-TRUE_G0    <- -5.0      # log 検出率。検出 230前後（複数回 22 / 単回 210 の見込み）
 
 ## --- シミュレーションの時間刻み ---------------------------------------------
 # dt = TIMEBURNIN / STEPAD が拡散係数に対して大きすぎると CFL 条件を破り
@@ -100,21 +135,26 @@ TIMEBURNIN   <- 20
 # 1/sampling_rate 倍で重みを戻す。1.0 なら間引かない（完全バッチ）。
 #
 # tag は出力ファイル名と図の凡例に使う。重複させないこと。
-CONDITIONS <- data.frame(
-  tag           = c("r100", "r050", "r020", "r010"),
-  sampling_rate = c( 1.00,   0.50,   0.20,   0.10),
-  beta2         = c(0.999,  0.999,  0.999,  0.999),
-  alpha_mult    = c( 1.0,    1.0,    1.0,    1.0),
-  stringsAsFactors = FALSE
-)
-
-# rate = 1.0 が失速したときに試す例:
-#   CONDITIONS <- data.frame(
-#     tag           = c("r100", "r100_b99", "r100_b99_a2"),
-#     sampling_rate = c( 1.00,   1.00,       1.00),
-#     beta2         = c(0.999,   0.99,       0.99),
-#     alpha_mult    = c( 1.0,    1.0,        2.0),
-#     stringsAsFactors = FALSE)
+CONDITIONS <- if (SWEEP == "rate") {
+  ## 間引きの検証。beta2 と alpha は固定して sampling_rate だけ振る。
+  data.frame(
+    tag           = c("r100", "r050", "r020", "r010"),
+    sampling_rate = c( 1.00,   0.50,   0.20,   0.10),
+    beta2         = RATE_BETA2,     # --beta2 で上書き
+    alpha_mult    = RATE_AMULT,     # --alpha-mult で上書き
+    stringsAsFactors = FALSE)
+} else {
+  ## 最適化器の検証。rate = 1.0 に固定して beta2 と alpha を振る。
+  ## base は失速することが分かっている基準。
+  ## beta2 を下げる理由: v の記憶が約 1/(1-beta2) 反復なので、0.999 だと
+  ## 序盤の大きな勾配が最後まで分母に残り、歩幅を潰す（Reddi et al. 2018）。
+  data.frame(
+    tag           = c("base", "b99", "b90", "b99_a2", "b99_a4"),
+    sampling_rate = c( 1.00,   1.00,  1.00,  1.00,     1.00),
+    beta2         = c(0.999,   0.99,  0.90,  0.99,     0.99),
+    alpha_mult    = c( 1.0,    1.0,   1.0,   2.0,      4.0),
+    stringsAsFactors = FALSE)
+}
 
 ## --- Adam の設定（条件で上書きしない共通部分）------------------------------
 MAX_ITER <- 200
@@ -161,9 +201,10 @@ MAKE_PLOT    <- TRUE    # トレースの図を PNG に出すか
 RUN_STAMP  <- format(Sys.time(), "%Y%m%d_%H%M%S")
 RESULTFILE <- file.path(
   "results",
-  sprintf("sgd_sim_conditions_%s%s.RData",
-          if (nzchar(RUN_TAG)) paste0(RUN_TAG, "_") else "",
+  sprintf("sgd_sim_%s%s_%s%s.RData", TESTBED, SWEEP,
+          if (nzchar(RUN_TAG)) paste0("_", RUN_TAG) else "",
           RUN_STAMP))
+cat(sprintf("== 検証台 %s / %s を振る ==\n", TESTBED, SWEEP))
 
 ## --- 設定の整合性チェック ---------------------------------------------------
 stopifnot(
@@ -502,11 +543,19 @@ run_adam <- function(cond) {
     }
   )
 
-  cat(sprintf("→ %s: %d 反復 / %.1f 分（%.1f 秒/反復）\n",
-              cond$tag, iter_done, tm[["elapsed"]] / 60,
-              tm[["elapsed"]] / max(1L, iter_done)))
+  ## **最終点で全データの対数尤度を1回だけ評価する。**
+  ## trace_ll は rate < 1 では間引いた推定値（1/rate 倍で重みを戻したもの）で、
+  ## 分散が大きく、条件が違えば値の水準も揃わない。**条件間の比較には使えない。**
+  ## ここで全データの尤度を取り直せば、どの条件も同じ物差しで測れる。
+  ## 1回の評価なので費用は無視できる。
+  ll_full <- tryCatch(secrad_obj$loglf(current_par, loglfscale = 1),
+                      error = function(e) NA_real_)
 
-  list(tag = cond$tag, cond = cond, final_par = current_par,
+  cat(sprintf("→ %s: %d 反復 / %.1f 分（%.1f 秒/反復）/ 全データ logL %.4f\n",
+              cond$tag, iter_done, tm[["elapsed"]] / 60,
+              tm[["elapsed"]] / max(1L, iter_done), ll_full))
+
+  list(tag = cond$tag, cond = cond, final_par = current_par, ll_full = ll_full,
        trace_par = trace_par, trace_grad = trace_grad,
        trace_step = trace_step, trace_ll = trace_ll,
        iter_done = iter_done, elapsed = tm[["elapsed"]],
@@ -544,8 +593,9 @@ Hinv <- if (!is.null(secrad_res) && !is.null(secrad_res$hessian))
 summ <- do.call(rbind, lapply(runs, function(r) {
   maxerr <- if (!is.null(ref_par))
               max(abs(r$final_par[PAR_NAMES] - ref_par[PAR_NAMES])) else NA_real_
-  llgap  <- if (!is.null(secrad_res))
-              (-secrad_res$value) - r$trace_ll[r$iter_done] else NA_real_
+  ## **全データで測り直した logL を使う。** trace_ll は間引いた推定値なので
+  ## 条件間で比較できない（rate が低いほど系統的に低く出る。2026-09-15 の実測）。
+  llgap  <- if (!is.null(secrad_res)) (-secrad_res$value) - r$ll_full else NA_real_
   ## 残りの距離 ≒ H^-1 g を標準誤差で割る
   dse <- NA_real_
   if (!is.null(Hinv) && !is.null(ref_se) && r$iter_done >= 1L) {
@@ -638,7 +688,7 @@ save(
   ## --- 参照解 ---
   secrad_res, ref_par, ref_se, true_par,
   ## --- 全条件の結果と要約 ---
-  runs, summ, CONDITIONS,
+  runs, summ, CONDITIONS, TESTBED, SWEEP,
   ## --- 再現に要る設定 ---
   RUN_TAG, RUN_STAMP, SEED, NX, ncell, CELL_SIZE, CELL_AREA,
   TRAP_COORD, EFFORT, N_OCCASION, STEPSPERTIME, STEPAD, TIMEBURNIN,

@@ -91,13 +91,32 @@ ML の文献に「Adam で十分」と書いてあっても、それは**厳密�
 
 ### 3.2 統計の立場から書かれたもの ← この track の本命
 
-| 文献 | 確度 | 何のために |
-|---|---|---|
-| **Toulis, P. & Airoldi, E.M. (2017)** "Asymptotic and finite-sample properties of estimators based on stochastic gradients." *Ann. Statist.* 45(4):1694–1727 | ★★ | **確率的勾配法を「推定量」として扱う。** 漸近分散・有効性・implicit SGD。R パッケージ `sgd` の背景 |
-| **Polyak, B.T. & Juditsky, A.B. (1992)** "Acceleration of Stochastic Approximation by Averaging." *SIAM J. Control Optim.* 30(4):838–855 | ★★ | Polyak 平均の原典。Step 1 で試した手法 |
-| **Bottou, L., Curtis, F.E. & Nocedal, J. (2018)** "Optimization Methods for Large-Scale Machine Learning." *SIAM Review* 60(2):223–311 | ★★★ | **統計・数理最適化の言葉による総説。まずこれを読むとよい** |
-| **Spall, J.C. (2003)** *Introduction to Stochastic Search and Optimization.* Wiley | ★★ | FDSA、SPSA、共通乱数。有限差分で確率的最適化をやる立場の教科書 |
-| **Kushner, H.J. & Yin, G.G. (2003)** *Stochastic Approximation and Recursive Algorithms and Applications.* Springer | ★ | 厳密な理論が要るとき |
+| 文献                                                                                                                                                           | 確度  | 何のために                                                          |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | --- | -------------------------------------------------------------- |
+| **Toulis, P. & Airoldi, E.M. (2017)** "Asymptotic and finite-sample properties of estimators based on stochastic gradients." *Ann. Statist.* 45(4):1694–1727 | ★★  | **確率的勾配法を「推定量」として扱う。** 漸近分散・有効性・implicit SGD。R パッケージ `sgd` の背景 |
+| **Polyak, B.T. & Juditsky, A.B. (1992)** "Acceleration of Stochastic Approximation by Averaging." *SIAM J. Control Optim.* 30(4):838–855                     | ★★  | Polyak 平均の原典。Step 1 で試した手法                                     |
+| **Bottou, L., Curtis, F.E. & Nocedal, J. (2018)** "Optimization Methods for Large-Scale Machine Learning." *SIAM Review* 60(2):223–311                       | ★★★ | **統計・数理最適化の言葉による総説。まずこれを読むとよい**                                |
+| **Spall, J.C. (2003)** *Introduction to Stochastic Search and Optimization.* Wiley                                                                           | ★★  | FDSA、SPSA、共通乱数。有限差分で確率的最適化をやる立場の教科書                            |
+| **Kushner, H.J. & Yin, G.G. (2003)** *Stochastic Approximation and Recursive Algorithms and Applications.* Springer                                          | ★   | 厳密な理論が要るとき                                                     |
+
+> **注意: この track は R パッケージ `sgd` を使っていない。**
+> 上の表で `sgd` に触れているのは「Toulis & Airoldi の論文がそのパッケージの
+> 理論的背景でもある」という文脈であって、**依存関係ではない**。
+>
+> **Adam は全スクリプトで手書き**（`m`, `v`, バイアス補正、`max_step` の
+> 30行ほど）。最適化パッケージは一切読み込んでいない。BFGS は base R の `optim`。
+> 勾配は `adcrsgd/sgd_utils.R` の `grad_cachewise`（`numDeriv` も使っていない。
+> 旧 `wrapper_20260302.R` だけが `numDeriv` を読む）。
+>
+> **手書きにせざるを得ない理由**:
+> - 目的関数が GLM 系の標準形ではなく、C++ で書かれた空間過程の尤度
+> - 複数回捕獲と単回捕獲を分け、単回だけ間引いて重みを戻す独自の構造
+> - advdiff キャッシュの共有と、キャッシュに沿った差分の評価順序
+>
+> 汎用パッケージはこのどれも受け付けない。**ただし `sgd` パッケージが実装する
+> implicit SGD の発想（学習率の誤設定に対して数値的に頑健）は、
+> 係数ごとに `alpha` を手調整している現状への示唆になりうる。**
+> 有限差分との相性に難があるので、すぐに採れる手ではない。
 
 ### 3.3 尤度・収束判定・ヘッセ行列
 
@@ -134,12 +153,12 @@ ML の文献に「Adam で十分」と書いてあっても、それは**厳密�
 
 ## 4. ウェブ資料
 
-| | 確度 | |
-|---|---|---|
+|                                                                                                             | 確度  |                                |
+| ----------------------------------------------------------------------------------------------------------- | --- | ------------------------------ |
 | **Sebastian Ruder** "An overview of gradient descent optimization algorithms" — ruder.io / arXiv:1609.04747 | ★★★ | Adam とその周辺を一望。査読論文ではないが広く引用される |
-| **Distill.pub** "Why Momentum Really Works"（Goh 2017） | ★★ | モーメンタムの**触れる解説**。図の作り方の参考にもなる |
-| **Goodfellow, Bengio & Courville** *Deep Learning* 8章 — deeplearningbook.org | ★★★ | Adam の実務的扱い。**全文無料** |
-| **Boyd & Vandenberghe** *Convex Optimization* — Stanford で全文無料 | ★★★ | §9.5 が Newton decrement |
+| **Distill.pub** "Why Momentum Really Works"（Goh 2017）                                                       | ★★  | モーメンタムの**触れる解説**。図の作り方の参考にもなる  |
+| **Goodfellow, Bengio & Courville** *Deep Learning* 8章 — deeplearningbook.org                                | ★★★ | Adam の実務的扱い。**全文無料**           |
+| **Boyd & Vandenberghe** *Convex Optimization* — Stanford で全文無料                                              | ★★★ | §9.5 が Newton decrement        |
 
 **引用の可否**: Ruder と Distill は査読を経ていないので、
 **論文に引くなら原典（Kingma & Ba、Reddi et al.）に当たること。**
