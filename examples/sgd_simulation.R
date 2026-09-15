@@ -128,12 +128,38 @@ GRAD_EPS <- 1e-4        # 前進差分の幅
 INIT <- c(dens_0 = -1.0, conn_0 = -2.0, conn_agri = 0.0,
           conn_wtr = 0.0, g0_1 = -5.0)
 
+## --- 収束の診断 -------------------------------------------------------------
+#
+# **max|g| と max|step| は、単独では収束判定に使えない。**
+#
+#   - 勾配の大きさには決まったスケールがない。個体数が増えれば勾配も大きくなるし、
+#     パラメータの取り方（log か生か）でも変わる。「|g| < 0.1 なら収束」のような
+#     絶対的な閾値は作れない
+#   - Adam の歩幅は m/sqrt(v) が ±1 に正規化されるので常に alpha 前後になる。
+#     「歩幅が小さい」は、収束したからかもしれないし進めないだけかもしれない
+#     （2026-09-14 にここを取り違えた。reports/20260914_report.md）
+#
+# 代わりに、スケールに依らない3つを見る。どれも trace から計算できるので追加コスト無し。
+#
+#   1. 勾配の符号の一貫性 … 直近 DIAG_WINDOW 反復で符号が揃っていれば、まだ一方向に
+#                            押されている（未到達）。50% 前後なら最適点の周りで
+#                            振動している（到達）。**単位を持たないのが利点**
+#   2. logL の上昇率      … 頭打ちになったか。残りの反復数の見積もりにも使える
+#   3. 正味の移動 / (alpha × 窓幅)
+#                          … 1 に近ければ一方向に進行中、0 に近ければその場で振動
+#
+# 最後に、ヘッセ行列があれば「残りの距離 ≒ H^-1 g」を標準誤差と比べる。
+# **標準誤差の 1% まで詰めれば実用上そこが答え**で、それ以上細かくしても
+# データが決められる精度を超える。
+DIAG_WINDOW <- 20       # 診断に使う直近の反復数
+
 ## --- 実行の制御 -------------------------------------------------------------
 SEED         <- 20260914
 RUN_OPTIM    <- TRUE    # BFGS で参照解を出すか
 RUN_HESSIAN  <- TRUE    # optim でヘッセ行列（＝標準誤差）も出すか
 OPTIM_MAXIT  <- 1000
 REPORT_EVERY <- 5       # 何反復ごとに途中経過を表示するか
+MAKE_PLOT    <- TRUE    # トレースの図を PNG に出すか（SGD_bera_20260818.R 由来）
 
 ## --- 保存先の組み立て（ここから下は触らない）-------------------------------
 # 秒まで入れるので、実行ごとに必ず別ファイルになる。
@@ -393,6 +419,44 @@ trace_ll   <- rep(NA_real_, MAX_ITER)
 
 iter_done <- 0L
 
+## 直近 DIAG_WINDOW 反復から、スケールに依らない3つの指標を出す。
+## trace を読むだけなので追加の尤度計算は要らない。
+diagnose <- function(iter) {
+  w <- min(DIAG_WINDOW, iter)
+  if (w < 4L) return(invisible(NULL))
+  idx <- seq.int(iter - w + 1L, iter)
+
+  ## ① 勾配の符号の一貫性。1.0 = ずっと同じ向き（進行中）、0.5 = 振動（到達）
+  sign_rate <- apply(trace_grad[idx, , drop = FALSE], 2,
+                     function(g) max(mean(g > 0), mean(g < 0)))
+
+  ## ② 正味の移動を「歩き続けた場合の距離」で割る。1 なら直進、0 ならその場足踏み
+  net    <- abs(trace_par[iter, ] - trace_par[idx[1L], ])
+  travel <- net / (ALPHA * (w - 1L))
+
+  ## ③ logL の上昇率
+  rate <- mean(diff(trace_ll[idx]))
+
+  cat(sprintf("  ├ 直近%d反復 : logL 上昇率 %+.5f / 反復\n", w, rate))
+  cat("  ├ 符号一致率 :",
+      paste(sprintf("%s %3.0f%%", PAR_NAMES, 100 * sign_rate), collapse = "  "), "\n")
+  cat("  ├ 正味移動/α :",
+      paste(sprintf("%s %.2f", PAR_NAMES, travel), collapse = "  "), "\n")
+
+  ## 2つを組み合わせて初めて意味が出る。
+  ## 「押されている（符号が揃う）のに進んでいない（正味の移動が小さい）」が失速で、
+  ## この track で繰り返し起きている状態。片方だけ見ても区別できない。
+  pushed <- any(sign_rate > 0.8)
+  moving <- any(travel > 0.3)
+  cat("  └ 判定       :",
+      if (pushed && moving)        "一方向に進行中（未到達）"
+      else if (pushed && !moving)  "★ 押されているのに進んでいない＝失速（未到達）"
+      else if (!pushed && !moving) "振動している。頂上に着いた可能性（最後にヘッセ行列で確認）"
+      else                         "過渡的",
+      "\n")
+  invisible(list(sign_rate = sign_rate, travel = travel, rate = rate))
+}
+
 time_adam <- system.time(
   for (iter in seq_len(MAX_ITER)) {
 
@@ -442,6 +506,7 @@ time_adam <- system.time(
       cat(sprintf("反復 %4d/%d  logL %.6f  max|g| %.3e  max|step| %.3e\n",
                   iter, MAX_ITER, trace_ll[iter], max(abs(g)), max(abs(step))))
       print(round(current_par, 5))
+      diagnose(iter)     # max|g| と max|step| だけでは判定できないので
     }
   }
 )
@@ -475,6 +540,105 @@ if (!is.null(ref_par)) {
   cat("＊ 比べる相手は真値ではなく BFGS 解。\n")
   cat("  同じ尤度を別の方法で最大化しているので、一致すべきはこちら。\n")
   cat("  真値とのずれは推定量の誤差であって、最適化の失敗ではない。\n")
+}
+
+## --- 収束の最終判定 ---------------------------------------------------------
+#
+# 最適点の近くでは logL(θ) ≒ logL(θ̂) - ½(θ-θ̂)ᵀ H (θ-θ̂) と近似できる。
+# ここから
+#
+#   残りの距離        θ̂ - θ ≒ H⁻¹ g
+#   残りの対数尤度    logL(θ̂) - logL(θ) ≒ ½ gᵀ H⁻¹ g      （Newton decrement）
+#
+# H は optim が loglfscale = -1 で返したヘッセ行列（＝ -logL のもの）なので、
+# そのまま使える。g は最終反復の勾配（SAMPLING_RATE = 1 なら全データの勾配）。
+#
+# **判定の基準は標準誤差。** データが決められる精度より細かく最適化しても意味がない。
+# 残りの距離が標準誤差の 1% を切っていれば、実用上そこが答え。
+
+if (RUN_HESSIAN && !is.null(secrad_res) && !is.null(secrad_res$hessian) && iter_done >= 1L) {
+  cat("\n-- 収束の最終判定（ヘッセ行列による）--\n")
+  g_last <- trace_grad[iter_done, ]
+  ok <- tryCatch({
+    Hinv      <- solve(secrad_res$hessian)
+    remaining <- as.vector(Hinv %*% g_last)          # 残りの距離
+    se        <- sqrt(diag(Hinv))                    # 標準誤差
+    decrement <- 0.5 * sum(g_last * remaining)       # 残りの対数尤度
+    names(remaining) <- names(se) <- PAR_NAMES
+
+    print(round(rbind(`残りの距離` = remaining,
+                      `標準誤差`   = se,
+                      `距離/SE`    = remaining / se), 5))
+    cat(sprintf("\n残りの対数尤度（Newton decrement）: %.6f\n", decrement))
+    ## ⚠ これは2次近似なので、最適点から離れているときは**大幅に過小評価する**。
+    ## 実測では decrement 2.2 に対して実際の差が 40.4 だったことがある。
+    ## 参照解があるなら logL を直接比べるほうが確実。decrement は
+    ## 「十分小さく、かつ他の指標も揃っている」ことの確認に使う。
+    if (!is.null(secrad_res)) {
+      actual <- (-secrad_res$value) - trace_ll[iter_done]
+      cat(sprintf("参照解との実際の logL 差       : %.6f\n", actual))
+      if (actual > 5 * max(decrement, 1e-9))
+        cat("  ＊ decrement が実際の差より大幅に小さい。2次近似が効く範囲の外にいます。\n")
+    }
+
+    worst <- max(abs(remaining / se))
+    cat(sprintf("最大の 距離/SE : %.4f\n", worst))
+    cat("判定: ",
+        if (worst < 0.01) "到達。標準誤差の 1% 未満まで詰まっている"
+        else if (worst < 0.1) "ほぼ到達。標準誤差の 10% 未満"
+        else if (worst < 1)   "未到達だが標準誤差の範囲内。反復を増やせば届く"
+        else                  "未到達。標準誤差を超えてずれている",
+        "\n", sep = "")
+    TRUE
+  }, error = function(e) {
+    cat("  ヘッセ行列が反転できないので判定できません: ", conditionMessage(e), "\n", sep = "")
+    FALSE
+  })
+} else {
+  cat("\n-- 収束の最終判定はスキップ（ヘッセ行列が無い）--\n")
+  cat("   RUN_HESSIAN = TRUE にすると、残りの距離を標準誤差と比べて判定します。\n")
+}
+
+## --- トレースの図 -----------------------------------------------------------
+# SGD_bera_20260818.R の末尾にあった図を移したもの。
+# 元は青線＋赤の破線だったが、線の役割を分けやすいのでトレースは黒にした。
+#   黒の実線 = Adam-SGD の推移 / 赤の破線 = BFGS 解 / 灰の点線 = 真値
+# 6枚目のパネルには対数尤度の推移を置く（元コードでは空いていた）。
+
+if (MAKE_PLOT && iter_done >= 2L) {
+  plotfile <- sub("\\.RData$", "_trace.png", RESULTFILE)
+  png(plotfile, width = 1200, height = 800, res = 120)
+  op <- par(mfrow = c(2, 3), mar = c(4, 4, 3, 1))
+
+  ## ラベルは ASCII にしておく。Windows の png() で日本語が化けることがあるため
+  ## （元コードも xlab="Iter", ylab="Value" だった）。
+  for (i in seq_along(PAR_NAMES)) {
+    nm <- PAR_NAMES[i]
+    yr <- range(c(trace_par[seq_len(iter_done), i],
+                  if (!is.null(ref_par)) ref_par[nm],
+                  true_par[nm]), na.rm = TRUE)
+    plot(seq_len(iter_done), trace_par[seq_len(iter_done), i], type = "l",
+         col = "black", lwd = 1.6, ylim = yr,
+         main = nm, xlab = "Iter", ylab = "Value")
+    if (!is.null(ref_par)) abline(h = ref_par[nm], col = "red", lty = 2, lwd = 2)
+    abline(h = true_par[nm], col = "grey55", lty = 3, lwd = 1.6)
+  }
+
+  ## 6枚目: 対数尤度。元コードでは空いていたパネル
+  ## ⚠ ylim に BFGS の logL を必ず含めること。含めないと基準線が描画範囲の外に出て
+  ## 切り捨てられ、「きれいに収束した」ように見えてしまう（最初これで嵌まった）。
+  llr <- range(c(trace_ll[seq_len(iter_done)],
+                 if (!is.null(secrad_res)) -secrad_res$value), na.rm = TRUE)
+  plot(seq_len(iter_done), trace_ll[seq_len(iter_done)], type = "l",
+       col = "black", lwd = 1.6, ylim = llr, main = "log-likelihood",
+       xlab = "Iter", ylab = "logL")
+  if (!is.null(secrad_res)) abline(h = -secrad_res$value, col = "red", lty = 2, lwd = 2)
+
+  par(op)
+  ## 凡例だけの余白が無いので、図の外側に説明を出す
+  dev.off()
+  cat("\n図: ", plotfile, "\n", sep = "")
+  cat("   黒の実線 = Adam-SGD / 赤の破線 = BFGS 解 / 灰の点線 = 真値\n")
 }
 
 dir.create("results", showWarnings = FALSE)
