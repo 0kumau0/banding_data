@@ -61,16 +61,32 @@
 #                   BFGS 解に小数4桁まで一致した（距離/SE = 0.0012）。
 #                   既定の 0.999 / x1 は**失速することが分かっている**ので、
 #                   間引きを検証するときは勝った設定を渡すこと。
+#   --max-iter      Adam の反復数（既定 200）。
+#                   2026-09-16 の検証台B では、勝った設定でも 200反復では
+#                   届かず、しかも全係数が正しい向きに動き続けていた。
+#                   「反復数が足りないのか設定が足りないのか」を分けるために
+#                   引数にした。スクリプトを書き換えて試さないこと。
+#   --conditions    条件を直接並べる。--sweep より優先。
+#                   書式: tag:beta2:alpha_mult[:sampling_rate] をカンマ区切り
+#                   （rate を省くと 1.0）。例:
+#                     --conditions "b90_a1:0.9:1,b90_a8:0.9:8,b50_a4:0.5:4"
+#                   **条件をスクリプトに直書きしないための引数**（2026-09-16）。
+#                   直書きすると「何を回したか」がログに残らず、後から
+#                   結果ファイルと対応が取れなくなる。
 .bad <- setdiff(grep("^--", .args, value = TRUE),
-                c("--testbed", "--sweep", "--tag", "--beta2", "--alpha-mult"))
+                c("--testbed", "--sweep", "--tag", "--beta2", "--alpha-mult",
+                  "--max-iter", "--conditions"))
 if (length(.bad)) stop("知らない引数: ", paste(.bad, collapse = " "))
 
 TESTBED    <- toupper(.opt("--testbed", "B"))
 SWEEP      <- tolower(.opt("--sweep",   "rate"))
 RATE_BETA2 <- as.numeric(.opt("--beta2",      "0.999"))
 RATE_AMULT <- as.numeric(.opt("--alpha-mult", "1"))
+MAX_ITER   <- as.integer(.opt("--max-iter",   "200"))
+COND_SPEC  <- .opt("--conditions", "")
 stopifnot(TESTBED %in% c("A", "B"), SWEEP %in% c("rate", "adam"),
-          RATE_BETA2 > 0, RATE_BETA2 < 1, RATE_AMULT > 0)
+          RATE_BETA2 > 0, RATE_BETA2 < 1, RATE_AMULT > 0,
+          is.finite(MAX_ITER), MAX_ITER >= 1L)
 
 ## --- 読み込むもの -----------------------------------------------------------
 SOURCEPATH <- "adcrsgd/secrad.r"      # 尤度エンジン（sgd = TRUE 対応版）
@@ -135,7 +151,24 @@ TIMEBURNIN   <- 20
 # 1/sampling_rate 倍で重みを戻す。1.0 なら間引かない（完全バッチ）。
 #
 # tag は出力ファイル名と図の凡例に使う。重複させないこと。
-CONDITIONS <- if (SWEEP == "rate") {
+CONDITIONS <- if (nzchar(COND_SPEC)) {
+  ## --conditions で直接指定された条件。書式は引数ブロックを参照。
+  ## **壊れる側まで押して窓の幅を測る**ときに使う（2026-09-16 の挟み撃ち）。
+  ## 窓の幅が分かれば中央を取れる。足環データは1反復が高くて探索できないので、
+  ## 検証台で測った窓こそが転用できる情報になる。
+  .fields <- strsplit(trimws(strsplit(COND_SPEC, ",")[[1]]), ":")
+  for (f in .fields)
+    if (!length(f) %in% 3:4)
+      stop("--conditions の書式は tag:beta2:alpha_mult[:rate] です: ",
+           paste(f, collapse = ":"))
+  data.frame(
+    tag           = sapply(.fields, `[`, 1L),
+    beta2         = as.numeric(sapply(.fields, `[`, 2L)),
+    alpha_mult    = as.numeric(sapply(.fields, `[`, 3L)),
+    sampling_rate = sapply(.fields, function(f)
+                            if (length(f) == 4L) as.numeric(f[4L]) else 1.0),
+    stringsAsFactors = FALSE)
+} else if (SWEEP == "rate") {
   ## 間引きの検証。beta2 と alpha は固定して sampling_rate だけ振る。
   data.frame(
     tag           = c("r100", "r050", "r020", "r010"),
@@ -157,7 +190,7 @@ CONDITIONS <- if (SWEEP == "rate") {
 }
 
 ## --- Adam の設定（条件で上書きしない共通部分）------------------------------
-MAX_ITER <- 200
+# MAX_ITER は --max-iter で指定する（上の引数ブロック）。
 
 # 係数ごとの学習率。尤度曲面の曲率が係数ごとに違うので、スカラー1つだと
 # 片方が動かず片方が飛ぶ。条件の alpha_mult でまとめて倍率をかけられる。
@@ -189,6 +222,21 @@ INIT <- c(dens_0 = -1.0, conn_0 = -2.0, conn_agri = 0.0,
 #   3. logL の上昇率 … 頭打ちになったか
 DIAG_WINDOW <- 20
 
+## --- 全データでの対数尤度をどれくらいの間隔で測るか -------------------------
+#
+# **trace_ll（毎反復の値）は条件間で比較できない。** rate < 1 のときは
+# 間引いた推定値（1/rate 倍で重みを戻したもの）なので、分散が大きく系統的に
+# 低く出る。2026-09-15 の実行では 4条件が −157 / −200 / −280 / −350 と並び、
+# **係数はほぼ同一なのに図だけが「全然違う」ように見えた**（誤読する図だった）。
+#
+# そこで LL_FULL_EVERY 反復ごとに、**全データ・重み戻しなしの対数尤度**を
+# secrad_obj で1回測る。これが条件間で比べられる唯一の物差しで、
+# BFGS の logL と同じ土俵に乗る。図の対数尤度パネルはこちらを描く。
+#
+# 費用: ncell=400・検出210 なら loglf 1回 約1秒。10反復ごとなら1条件あたり
+# 400反復で約40秒（全体の 1.4%）。0 を指定すると測らない（図は描けない）。
+LL_FULL_EVERY <- 10
+
 ## --- 実行の制御 -------------------------------------------------------------
 SEED         <- 20260914
 RUN_OPTIM    <- TRUE    # BFGS で参照解を出すか（全条件で共有する）
@@ -199,12 +247,15 @@ MAKE_PLOT    <- TRUE    # トレースの図を PNG に出すか
 
 ## --- 保存先の組み立て（ここから下は触らない）-------------------------------
 RUN_STAMP  <- format(Sys.time(), "%Y%m%d_%H%M%S")
+SWEEP_NAME <- if (nzchar(COND_SPEC)) "custom" else SWEEP
 RESULTFILE <- file.path(
   "results",
-  sprintf("sgd_sim_%s%s_%s%s.RData", TESTBED, SWEEP,
+  sprintf("sgd_sim_%s%s_%s%s.RData", TESTBED, SWEEP_NAME,
           if (nzchar(RUN_TAG)) paste0("_", RUN_TAG) else "",
           RUN_STAMP))
-cat(sprintf("== 検証台 %s / %s を振る ==\n", TESTBED, SWEEP))
+cat(sprintf("== 検証台 %s / %s を振る（最大 %d 反復）==\n",
+            TESTBED, SWEEP_NAME, MAX_ITER))
+if (nzchar(COND_SPEC)) cat("   条件: ", COND_SPEC, "\n", sep = "")
 
 ## --- 設定の整合性チェック ---------------------------------------------------
 stopifnot(
@@ -214,9 +265,13 @@ stopifnot(
   length(TRUE_CONN) == 3L,
   nrow(CONDITIONS) >= 1L,
   !anyDuplicated(CONDITIONS$tag),
+  all(is.finite(CONDITIONS$sampling_rate)),
   all(CONDITIONS$sampling_rate >  0),
   all(CONDITIONS$sampling_rate <= 1),
-  all(CONDITIONS$beta2 > 0), all(CONDITIONS$beta2 < 1)
+  all(is.finite(CONDITIONS$beta2)),
+  all(CONDITIONS$beta2 > 0), all(CONDITIONS$beta2 < 1),
+  all(is.finite(CONDITIONS$alpha_mult)),
+  all(CONDITIONS$alpha_mult > 0)
 )
 
 
@@ -433,7 +488,8 @@ make_single_getter <- function(rate) {
 cat("\n== 6. Adam-SGD ==\n")
 
 ## 直近 DIAG_WINDOW 反復から、スケールに依らない3つの指標を出す。
-diagnose <- function(iter, tp, tg, tl, alpha) {
+## tl = 間引いた対数尤度（毎反復）/ tlf = 全データの対数尤度（間隔をあけて測る）。
+diagnose <- function(iter, tp, tg, tl, tlf, alpha) {
   w <- min(DIAG_WINDOW, iter)
   if (w < 4L) return(invisible(NULL))
   idx <- seq.int(iter - w + 1L, iter)
@@ -443,10 +499,21 @@ diagnose <- function(iter, tp, tg, tl, alpha) {
                      function(g) max(mean(g > 0), mean(g < 0)))
   ## ② 正味の移動を「歩き続けた場合の距離」で割る
   travel <- abs(tp[iter, ] - tp[idx[1L], ]) / (alpha * (w - 1L))
-  ## ③ logL の上昇率
-  rate <- mean(diff(tl[idx]))
+  ## ③ logL の上昇率。
+  ## **全データの値が窓の中に2点以上あればそちらを使う。** 間引いた tl は
+  ## rate が低いと標本のばらつきに埋もれ、上昇中でも負の率が出る
+  ## （2026-09-16 の r010 で −1.43/反復 と表示された。実際は上昇していた）。
+  idxf <- idx[is.finite(tlf[idx])]
+  if (length(idxf) >= 2L) {
+    rate <- (tlf[idxf[length(idxf)]] - tlf[idxf[1L]]) /
+            (idxf[length(idxf)] - idxf[1L])
+    rate_src <- "全データ"
+  } else {
+    rate <- mean(diff(tl[idx]))
+    rate_src <- "間引き"
+  }
 
-  cat(sprintf("  ├ 直近%d反復 : logL 上昇率 %+.5f / 反復\n", w, rate))
+  cat(sprintf("  ├ 直近%d反復 : logL 上昇率 %+.5f / 反復（%s）\n", w, rate, rate_src))
   cat("  ├ 符号一致率 :",
       paste(sprintf("%s %3.0f%%", PAR_NAMES, 100 * sign_rate), collapse = "  "), "\n")
   cat("  ├ 正味移動/α :",
@@ -489,8 +556,16 @@ run_adam <- function(cond) {
   trace_par  <- matrix(NA_real_, MAX_ITER, length(PAR_NAMES),
                        dimnames = list(NULL, PAR_NAMES))
   trace_grad <- trace_step <- trace_par
-  trace_ll   <- rep(NA_real_, MAX_ITER)
+  trace_ll   <- rep(NA_real_, MAX_ITER)   # 間引いた推定値。条件間で比較できない
+  trace_ll_full <- rep(NA_real_, MAX_ITER) # 全データ。条件間で比較できる
   iter_done  <- 0L
+
+  ## 全データでの対数尤度。間引きも重み戻しも入らないので BFGS と同じ土俵。
+  ## **この評価の時間は別に数えて、秒/反復 から除く。** 含めると
+  ## 「間引くと速くなるか」の比較が、診断の費用のぶんだけ歪む。
+  ll_full_at <- function(p) tryCatch(secrad_obj$loglf(p, loglfscale = 1),
+                                     error = function(e) NA_real_)
+  ll_full_secs <- 0
 
   tm <- system.time(
     for (iter in seq_len(MAX_ITER)) {
@@ -534,11 +609,19 @@ run_adam <- function(cond) {
       trace_ll[iter]     <- objfun(current_par)
       iter_done <- iter
 
+      ## 条件間で比べられる物差し。図と診断はこちらを使う。
+      if (LL_FULL_EVERY > 0 && (iter == 1L || iter %% LL_FULL_EVERY == 0L))
+        ll_full_secs <- ll_full_secs +
+          system.time(trace_ll_full[iter] <- ll_full_at(current_par))[["elapsed"]]
+
       if (iter == 1L || iter %% REPORT_EVERY == 0L) {
-        cat(sprintf("反復 %4d/%d  logL %.6f  max|g| %.3e  max|step| %.3e\n",
-                    iter, MAX_ITER, trace_ll[iter], max(abs(g)), max(abs(step))))
+        cat(sprintf("反復 %4d/%d  logL %.6f（全データ %s）  max|g| %.3e  max|step| %.3e\n",
+                    iter, MAX_ITER, trace_ll[iter],
+                    if (is.na(trace_ll_full[iter])) "—"
+                    else sprintf("%.6f", trace_ll_full[iter]),
+                    max(abs(g)), max(abs(step))))
         print(round(current_par, 5))
-        diagnose(iter, trace_par, trace_grad, trace_ll, alpha)
+        diagnose(iter, trace_par, trace_grad, trace_ll, trace_ll_full, alpha)
       }
     }
   )
@@ -548,17 +631,24 @@ run_adam <- function(cond) {
   ## 分散が大きく、条件が違えば値の水準も揃わない。**条件間の比較には使えない。**
   ## ここで全データの尤度を取り直せば、どの条件も同じ物差しで測れる。
   ## 1回の評価なので費用は無視できる。
-  ll_full <- tryCatch(secrad_obj$loglf(current_par, loglfscale = 1),
-                      error = function(e) NA_real_)
+  ## 最終反復でちょうど測っていればそれを使い、無駄な再評価をしない。
+  if (iter_done >= 1L && !is.finite(trace_ll_full[iter_done]))
+    trace_ll_full[iter_done] <- ll_full_at(current_par)
+  ll_full <- if (iter_done >= 1L) trace_ll_full[iter_done] else NA_real_
 
-  cat(sprintf("→ %s: %d 反復 / %.1f 分（%.1f 秒/反復）/ 全データ logL %.4f\n",
+  ## 秒/反復 は診断（全データ logL）の時間を除いた SGD 本体だけの値。
+  elapsed_sgd <- tm[["elapsed"]] - ll_full_secs
+
+  cat(sprintf("→ %s: %d 反復 / %.1f 分（%.1f 秒/反復。ほかに診断 %.1f 分）/ 全データ logL %.4f\n",
               cond$tag, iter_done, tm[["elapsed"]] / 60,
-              tm[["elapsed"]] / max(1L, iter_done), ll_full))
+              elapsed_sgd / max(1L, iter_done), ll_full_secs / 60, ll_full))
 
   list(tag = cond$tag, cond = cond, final_par = current_par, ll_full = ll_full,
        trace_par = trace_par, trace_grad = trace_grad,
        trace_step = trace_step, trace_ll = trace_ll,
+       trace_ll_full = trace_ll_full,
        iter_done = iter_done, elapsed = tm[["elapsed"]],
+       elapsed_sgd = elapsed_sgd, ll_full_secs = ll_full_secs,
        alpha = alpha, n_used = length(multi_ids) + sample_size)
 }
 
@@ -604,7 +694,7 @@ summ <- do.call(rbind, lapply(runs, function(r) {
   }
   data.frame(tag = r$tag, rate = r$cond$sampling_rate, beta2 = r$cond$beta2,
              alpha_mult = r$cond$alpha_mult, n_used = r$n_used,
-             `秒/反復` = r$elapsed / max(1L, r$iter_done),
+             `秒/反復` = r$elapsed_sgd / max(1L, r$iter_done),
              `最大誤差` = maxerr, `logL差` = llgap, `最大 距離/SE` = dse,
              check.names = FALSE, stringsAsFactors = FALSE)
 }))
@@ -653,16 +743,34 @@ if (MAKE_PLOT && any(sapply(runs, function(r) r$iter_done) >= 2L)) {
   }
 
   ## 6枚目: 対数尤度。
+  ##
+  ## **描くのは全データで測り直した値（trace_ll_full）。**
+  ## 毎反復の trace_ll は間引いた推定値なので、rate が違うと水準がずれ、
+  ## **係数がほぼ同一でも4本が全く違う高さに並ぶ**（2026-09-15 の図がそれで、
+  ## 「4条件が全然違う」と誤読する図になっていた）。条件間で比べられるのは
+  ## 全データの値だけで、これなら BFGS の logL と同じ土俵に乗る。
+  ## 測る間隔は LL_FULL_EVERY 反復なので、線は飛び飛びの点を結んだもの。
+  ##
   ## ⚠ ylim に BFGS の logL を必ず含めること。含めないと基準線が描画範囲の外に出て
   ## 切り捨てられ、「きれいに収束した」ように見えてしまう。
-  llr <- range(c(unlist(lapply(runs, function(r) r$trace_ll[seq_len(r$iter_done)])),
+  llf <- lapply(runs, function(r) {
+    i <- which(is.finite(r$trace_ll_full))
+    list(i = i, v = r$trace_ll_full[i])
+  })
+  has_full <- any(sapply(llf, function(x) length(x$i)) >= 2L)
+
+  llr <- range(c(unlist(lapply(llf, `[[`, "v")),
+                 if (!has_full)
+                   unlist(lapply(runs, function(r) r$trace_ll[seq_len(r$iter_done)])),
                  if (!is.null(secrad_res)) -secrad_res$value), na.rm = TRUE)
   plot(NA, xlim = c(1, MAX_ITER), ylim = llr,
-       main = "log-likelihood", xlab = "Iter", ylab = "logL")
+       main = if (has_full) "log-likelihood (all data)" else "log-likelihood (subsampled)",
+       xlab = "Iter", ylab = "logL")
   for (k in seq_along(runs)) {
     r <- runs[[k]]
-    lines(seq_len(r$iter_done), r$trace_ll[seq_len(r$iter_done)],
-          col = cols[k], lwd = 1.6)
+    if (has_full) lines(llf[[k]]$i, llf[[k]]$v, col = cols[k], lwd = 1.6, type = "o", pch = 16, cex = 0.4)
+    else          lines(seq_len(r$iter_done), r$trace_ll[seq_len(r$iter_done)],
+                        col = cols[k], lwd = 1.6)
   }
   if (!is.null(secrad_res)) abline(h = -secrad_res$value, col = "red", lty = 2, lwd = 2)
   legend("bottomright", legend = names(runs), col = cols, lwd = 1.6,
@@ -673,6 +781,8 @@ if (MAKE_PLOT && any(sapply(runs, function(r) r$iter_done) >= 2L)) {
   cat("\n図: ", plotfile, "\n", sep = "")
   cat("   条件ごとの色 = ", paste(names(runs), collapse = " / "),
       " / 赤の破線 = BFGS 解 / 灰の点線 = 真値\n", sep = "")
+  cat("   対数尤度パネルは**全データで測り直した値**（", LL_FULL_EVERY,
+      "反復ごと）。間引いた trace_ll は条件間で比較できないので描いていない\n", sep = "")
 }
 
 ## --- 保存 -------------------------------------------------------------------
@@ -688,12 +798,13 @@ save(
   ## --- 参照解 ---
   secrad_res, ref_par, ref_se, true_par,
   ## --- 全条件の結果と要約 ---
-  runs, summ, CONDITIONS, TESTBED, SWEEP,
+  runs, summ, CONDITIONS, TESTBED, SWEEP, SWEEP_NAME, COND_SPEC,
   ## --- 再現に要る設定 ---
   RUN_TAG, RUN_STAMP, SEED, NX, ncell, CELL_SIZE, CELL_AREA,
   TRAP_COORD, EFFORT, N_OCCASION, STEPSPERTIME, STEPAD, TIMEBURNIN,
   TRUE_DENS, TRUE_CONN, TRUE_ADV, TRUE_G0,
   MAX_ITER, ALPHA, MAX_STEP, BETA1, EPS_ADAM, GRAD_EPS, INIT, DIAG_WINDOW,
+  LL_FULL_EVERY, RATE_BETA2, RATE_AMULT,
   ## --- 個体の内訳 ---
   n_detected, multi_ids, single_ids,
   file = RESULTFILE)
