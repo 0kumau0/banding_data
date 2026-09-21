@@ -235,6 +235,10 @@ t_start <- Sys.time()
 #   Rscript SGD_bear_20260909.R --init far --tag A --alpha-mult 1 --threads 16
 #   Rscript SGD_bear_20260909.R --init far --tag B --alpha-mult 2 --threads 16
 #
+# 多点出発（§4b。参照解が本当に最大点かを確かめる。SGD へは進まない）:
+#
+#   Rscript SGD_bear_20260909.R --multistart 6 --ms-max-hours 60 --threads 16
+#
 # **--tag を付けないとチェックポイントとログが衝突して互いを壊す。**
 # BFGS 参照解 (OPTIM_FILE) だけは設定に依らないので共有する。
 .args <- commandArgs(trailingOnly = TRUE)
@@ -257,7 +261,8 @@ RUN_TAG <- .opt("--tag", "")
 # 何時間も走ることになる（2026-09-11、--no-hessian でこれが起きた）。
 .flags_noarg <- c("--dry-run", "--no-sgd", "--no-optim", "--no-hessian")
 .flags_arg   <- c("--max-iter", "--init", "--beta2", "--tag",
-                  "--alpha-mult", "--threads")
+                  "--alpha-mult", "--threads",
+                  "--multistart", "--ms-max-hours", "--ms-maxit")
 .known <- character(0)
 for (f in .flags_arg) {
   i <- which(.args == f)
@@ -274,6 +279,15 @@ if (length(.unknown))
 # 最も効いた（誤差 0.01 到達までの反復数が 326 -> 111）。max_step も同率で上げないと、
 # 発散の歯止めが常時作動する状態になってしまう。
 ALPHA_MULT <- as.numeric(.opt("--alpha-mult", "1"))
+
+# 多点出発（§4b）。0 なら通常どおり SGD へ進む。
+# 1本あたり loglf を数百回呼ぶので、クマ規模では1本が数時間かかる。
+# **--ms-max-hours を必ず指定して、放置しても止まるようにすること。**
+MULTISTART   <- as.integer(.opt("--multistart",   "0"))
+MS_MAX_HOURS <- as.numeric(.opt("--ms-max-hours", "60"))
+MS_MAXIT     <- as.integer(.opt("--ms-maxit",     "200"))
+MS_START_SD  <- 0.5      # 3本目以降を INIT_FAR の周りに散らす幅
+stopifnot(MULTISTART >= 0L, MS_MAX_HOURS > 0, MS_MAXIT >= 1L)
 
 # OpenMP のスレッド数。複数条件を並列に走らせるときは分け合う。
 # secrad.r を source する前に設定しないと効かない。
@@ -595,6 +609,117 @@ if (RUN_OPTIM) {
   secrad_res <- NULL
   ref_par <- OLD_PAR_STD          # 参照解として変換した旧解を使う
   say("optim をスキップ（RUN_OPTIM = FALSE）。参照解には変換した旧解を使う。")
+}
+
+
+# ===========================================================================
+# 4b. 多点出発（--multistart N のときだけ。終わったら終了する）
+# ===========================================================================
+#
+# **参照解が本当に最大点かを、実データで確かめる。**
+#
+# 2026-09-17 に合成データ（疎な再捕獲）で、遠方から出発した BFGS が
+# 最大点に届かず、別の峰で convergence = 0 を返すことが分かった
+# （reports/20260916_bracket_report.md §8）。**原因は最適化器ではなく
+# 尤度面の多峰性。** 多点出発のうち 2/3 がより良い峰に着いた。
+#
+# **クマ実データでも同じことが起きているなら、この track の判定の土台が崩れる。**
+# 参照解 OPTIM_FILE は「変換した旧解」という既に最適点の近くから出発させて
+# いるので比較的安全だが、**確かめていない。**
+#
+# クマは1個体あたり2.49検出で、上の合成データ（1.09）より密。
+# **多峰性がどの程度効くかは規模ごとに違うので、測るしかない。**
+#
+# 出発点:
+#   1本目 … 変換した旧解（＝参照解の出発点）。これが最良なら前提は保たれる
+#   2本目 … INIT_FAR（遠方）
+#   3本目以降 … INIT_FAR の周りに散らした点
+#
+# 1本ごとに CSV へ追記するので、途中で止めてもそこまでは残る。
+# --max-hours で自分から止まる。再実行すれば CSV を読んで続きから。
+
+if (MULTISTART > 0L) {
+  MS_FILE <- paste0(TAG, "_multistart",
+                    if (nzchar(RUN_TAG)) paste0("_", RUN_TAG) else "", ".csv")
+  say("== 4b. 多点出発 ", MULTISTART, " 点 ==")
+  say("  出力: ", MS_FILE, "（1本ごとに追記）")
+  say("  上限: ", MS_MAX_HOURS, " 時間 / 1本あたり maxit ", MS_MAXIT)
+
+  ms_done <- 0L
+  if (file.exists(MS_FILE)) {
+    prev <- tryCatch(read.csv(MS_FILE, stringsAsFactors = FALSE), error = function(e) NULL)
+    if (!is.null(prev) && nrow(prev)) {
+      ms_done <- max(prev$start)
+      say("  既存の ", nrow(prev), " 本に追記（start ", ms_done + 1L, " から）")
+    }
+  }
+
+  ms_start_par <- function(k) {
+    if (k == 1L) return(OLD_PAR_STD)
+    if (k == 2L) return(INIT_FAR)
+    set.seed(20260921 + k)
+    s <- INIT_FAR + rnorm(length(PAR_NAMES), 0, MS_START_SD)
+    setNames(s, PAR_NAMES)
+  }
+
+  t_ms <- Sys.time()
+  for (k in seq_len(MULTISTART)) {
+    if (k <= ms_done) next
+    if (as.numeric(difftime(Sys.time(), t_ms, units = "hours")) > MS_MAX_HOURS) {
+      say("  時間の上限に達したので打ち切ります（start ", k, " 以降は未実行）")
+      break
+    }
+    p0 <- ms_start_par(k)
+    say(sprintf("  [start %d] 出発 %s", k,
+                paste(sprintf("%.3f", p0), collapse = " ")))
+    t0 <- Sys.time()
+    fit <- tryCatch(optim(p0, secrad_obj$loglf, method = "BFGS",
+                          control = list(maxit = MS_MAXIT, trace = 1, REPORT = 10),
+                          loglfscale = -1, hessian = FALSE),
+                    error = function(e) { say("  失敗: ", conditionMessage(e)); NULL })
+    hrs <- as.numeric(difftime(Sys.time(), t0, units = "hours"))
+    if (is.null(fit)) next
+
+    row <- data.frame(start = k, kind = if (k == 1L) "transformed"
+                                        else if (k == 2L) "far" else "perturbed",
+                      logL = -fit$value, convergence = fit$convergence,
+                      counts_fn = fit$counts[["function"]],
+                      counts_gr = fit$counts[["gradient"]],
+                      hours = hrs,
+                      t(setNames(fit$par, PAR_NAMES)),
+                      stringsAsFactors = FALSE)
+    write.table(row, MS_FILE, sep = ",", row.names = FALSE,
+                col.names = !file.exists(MS_FILE) || file.size(MS_FILE) == 0,
+                append = file.exists(MS_FILE) && file.size(MS_FILE) > 0)
+    say(sprintf("  [start %d] logL %.6f / conv %d / %.1f時間", k, -fit$value,
+                fit$convergence, hrs))
+    print(round(setNames(fit$par, PAR_NAMES), 5))
+  }
+
+  ## --- まとめ ---------------------------------------------------------------
+  if (file.exists(MS_FILE)) {
+    d <- read.csv(MS_FILE, stringsAsFactors = FALSE)
+    say("\n== 多点出発のまとめ ==")
+    print(d[order(-d$logL), c("start", "kind", "logL", "convergence", "hours")])
+    best <- d[which.max(d$logL), ]
+    ref_row <- d[d$kind == "transformed", ]
+    say(sprintf("最良: start %d (%s) logL %.6f", best$start, best$kind, best$logL))
+    if (nrow(ref_row)) {
+      gap <- best$logL - ref_row$logL[1]
+      say(sprintf("参照解の出発点からの結果との差: %+.6f", gap))
+      if (gap > 0.01) {
+        say("**参照解は最大点ではない。** 判定の土台を見直すこと。")
+        say("  reports/20260916_bracket_report.md §8.3b と同じ現象が実データでも起きている。")
+      } else {
+        say("**参照解が最良。** この track の判定の前提は保たれている。")
+      }
+    }
+    say(sprintf("峰の数（logL を 0.01 で丸めて）: %d",
+                length(unique(round(d$logL / 0.01)))))
+  }
+
+  say("多点出発を終了します（--multistart 指定時は SGD へ進みません）")
+  quit(status = 0)
 }
 
 
