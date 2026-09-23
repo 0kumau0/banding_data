@@ -187,6 +187,25 @@ one_dataset <- function(idx) {
   ## 峰の数: 対数尤度を LL_TOL で丸めて数える
   n_peak <- length(unique(round(lls[ok] / LL_TOL)))
 
+  ## **既定の初期値が最良を逃した件は、データそのものも保存する。**
+  ## 2026-09-24 の1回目は要約だけを残す設計だったので、231件中もっとも興味深い
+  ## 6件を後から調べられなかった（reports/20260924_multistart_report.md §5-2）。
+  ## 失敗は稀（疎で7.8%）なのでディスクはほとんど使わない。
+  ## ここで保存しておけば、Adam をその6件に当てるといった追試ができる。
+  if (far_gap >= LL_TOL) {
+    f <- sprintf("results/multistart_miss_%04d.RData", idx)
+    tryCatch({
+      trueind <- simdata$trueind
+      save(detect, grid_cov, xcoord, ycoord, effort_loc, trueind,
+           starts, lls, fits, best_par, best_ll, far_ll, far_gap, n_peak,
+           lv, TRUE_CONN, TRUE_ADV, EFFORT, N_OCCASION, ncell,
+           CELL_SIZE, CELL_AREA, STEPAD, TIMEBURNIN, STEPSPERTIME, INIT,
+           file = f)
+      cat("     ↑ 逃した件。データを保存: ", f, "\n", sep = "")
+    }, error = function(e)
+      cat("     データの保存に失敗: ", conditionMessage(e), "\n", sep = ""))
+  }
+
   ## --- 最良点での標準誤差（面の平坦さの指標）--------------------------------
   max_se <- NA_real_
   if (DO_HESSIAN) {
