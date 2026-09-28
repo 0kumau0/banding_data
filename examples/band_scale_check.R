@@ -285,34 +285,61 @@ if (nrow(small))
 tot_rec <- sum(tab$n_record); tot_ind <- sum(tab$n_ind)
 tot_m <- sum(tab$n_multi);    tot_s <- sum(tab$n_single)
 
-cat("\n== 全体 ==\n")
+## **ADCR の解析は種ごとに行う。判定も種ごと。**
+## 合計は「どれだけのデータがあるか」の参考にしかならない。
+cat("\n== 参考: 全種の合計（実際の解析は種ごとに行うので、判定には使わない）==\n")
 cat(sprintf("  記録 %d / 個体 %d / 複数回 %d / 単回 %d\n", tot_rec, tot_ind, tot_m, tot_s))
-cat(sprintf("  複数回 : 単回 = 1 : %.1f\n", tot_s / max(1, tot_m)))
-cat(sprintf("  **1個体あたり検出数 = %.3f**\n", tot_rec / tot_ind))
 
-cat("\n-- ① 多峰性の危険域か（reports/20260924_multistart_report.md）--\n")
-dpi <- tot_rec / tot_ind
-cat(sprintf("  1個体あたり %.3f 検出\n", dpi))
-if (dpi >= 1.3) {
-  cat("  → **安全域。** 1.29 と 1.73 では231データセット中0件の失敗。\n")
-  cat("     単一の初期値からの最尤推定でよい見込み。\n")
-} else if (dpi >= 1.15) {
-  cat("  → **境界。** 失敗が観測されたのは 1.13 以下。余裕は小さい。\n")
-  cat("     多点出発（3点以上）を予算に入れておくこと。\n")
-} else {
-  cat("  → **⚠ 危険域。** 1.11 では 7.8% が単一初期値で劣った峰に落ちた。\n")
-  cat("     外したときの遅れは対数尤度で中央値 9.1。**多点出発は必須。**\n")
+## --- ① 多峰性の危険域か。種ごとに判定する ----------------------------------
+zone <- function(x) ifelse(x >= 1.3, "安全", ifelse(x >= 1.15, "境界", "危険"))
+tab$zone <- zone(tab$det_per_ind)
+
+cat("\n-- ① 多峰性の危険域か（種ごと。reports/20260924_multistart_report.md）--\n")
+cat("   判定: 1.30以上=安全（231データセットで失敗0件） / 1.15-1.30=境界 / 1.15未満=危険\n\n")
+zt <- table(factor(tab$zone, levels = c("安全", "境界", "危険")))
+for (z in names(zt))
+  cat(sprintf("  %-4s : %2d 種  （個体数の合計 %d）\n", z, zt[[z]],
+              sum(tab$n_ind[tab$zone == z])))
+
+if (zt[["危険"]] > 0) {
+  cat("\n  ⚠ 危険域の種:\n")
+  dz <- tab[tab$zone == "危険", ]
+  dz <- dz[order(-dz$n_ind), ]
+  print(format(dz[, c("group", "n_ind", "n_multi", "det_per_ind")], digits = 3),
+        row.names = FALSE)
+  cat("\n  → 1.11 では 7.8% が単一初期値で劣った峰に落ちた。外したときの遅れは\n")
+  cat("     対数尤度で中央値 9.1。**この種では多点出発が必須。**\n")
   cat("     メッシュ解像度や検出器の定義で 1.3 を超えられないかを先に検討する価値がある。\n")
 }
 
-cat("\n-- ② sampling_rate で買える速度（単回だけ間引く設計）--\n")
-cat(sprintf("  rate 1.00 : 実効 %6.0f 個体（1.0倍）\n", tot_ind))
-for (r in c(0.5, 0.2, 0.1)) {
-  e <- tot_m + r * tot_s
-  cat(sprintf("  rate %.2f : 実効 %6.0f 個体（**%.1f倍**）\n", r, e, (tot_ind / e)^1.78))
+cat(sprintf("\n  1個体あたり検出数の分布: 最小 %.2f / 中央 %.2f / 最大 %.2f\n",
+            min(tab$det_per_ind), median(tab$det_per_ind), max(tab$det_per_ind)))
+
+## --- ② sampling_rate で買える速度。個体数の多い種ほど効く -------------------
+cat("\n-- ② sampling_rate で買える速度（種ごと。単回だけ間引く設計）--\n")
+big <- tab[order(-tab$n_ind), ][seq_len(min(5L, nrow(tab))), ]
+cat("   個体数の多い5種:\n")
+print(format(big[, c("group", "n_ind", "n_multi", "n_single",
+                     "eff_nind_r20", "speedup_r20", "eff_nind_r10", "speedup_r10")],
+             digits = 3), row.names = FALSE)
+cat("   ＊ eff_nind = 1反復で使う実効個体数、speedup = (n_ind/eff_nind)^1.78\n")
+cat("     指数 1.78 は results/pcap_bench.csv の実測。\n")
+cat("     **複数回個体は毎回全部使うので、単回の割合が高いほど間引きが効く。**\n")
+
+## --- 規模の警告 --------------------------------------------------------------
+## クマは109個体。桁が変われば、測っていない領域に入る。
+mx <- max(tab$n_ind)
+if (mx > 5000) {
+  cat(sprintf("\n  ⚠ 最大の種で %d 個体（クマの %.0f 倍）。\n", mx, mx / 109))
+  cat("    loglf のコストは nind の約1.8乗（results/pcap_bench.csv）。\n")
+  cat("    **これは本家 pcap_poisson の性能バグに由来する**（ind_cov.minCoeff() が\n")
+  cat("    最内ループの中にあり O(nind^2) になる。reports/pcap_fix_decision.md）。\n")
+  cat("    修正すれば指数は 1.10 に落ちる。nind 19,200 での実測で 11.8倍速。\n")
+  cat(sprintf("    この規模なら **約%.0f倍** になる見込み。\n",
+              11.8 * (mx / 19200)^0.68))
+  cat("    2026-09-14 に『論文化のとき記述が煩雑になる』として修正を見送ったが、\n")
+  cat("    **この規模では実行可能性そのものに関わる。判断を見直す価値がある。**\n")
 }
-cat("  ＊ 指数 1.78 は results/pcap_bench.csv の実測。複数回個体は毎回全部使うので、\n")
-cat("    単回の割合が高いほど間引きが効く。\n")
 
 cat("\n-- ③ ncell --\n")
 if (!is.na(n_mesh)) {
