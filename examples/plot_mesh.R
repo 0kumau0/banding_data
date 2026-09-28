@@ -34,7 +34,7 @@
   if (is.na(i) || i == length(.args)) default else .args[i + 1L]
 }
 .bad <- setdiff(grep("^--", .args, value = TRUE),
-                c("--mesh", "--land", "--rds", "--out", "--no-effort"))
+                c("--mesh", "--land", "--rds", "--out", "--no-effort", "--join"))
 if (length(.bad)) stop("知らない引数: ", paste(.bad, collapse = " "))
 
 if (!requireNamespace("sf", quietly = TRUE)) stop("sf パッケージが要ります")
@@ -88,11 +88,63 @@ if (USE_EFFORT) {                      # config.R は冒頭で読み込み済み
     }
   }
 }
+## --- ★ effort の meshcode は「行番号」であって JIS メッシュコードではない ---
+##
+## make_data&plot.R:99-109 が出自:
+##
+##   mesh <- st_read("mesh2_convex7.gpkg") %>% mutate(meshcode2 = row_number())
+##   band_place <- st_join(band_place, mesh, join = st_within, left = FALSE)
+##   band_data  <- ... rename(meshcode = meshcode2)
+##   effort     <- make.effort2(band_data)
+##
+## **捕獲地点を空間結合して、その地点が入るメッシュの「行番号」を持たせている。**
+## gpkg の meshcode 列（make_mesh_20251127.R:63 が入れた jpgrid のコード）は
+## band_data 側では捨てられている（griddata 側では oldmeshcode2 に退避。:181）。
+##
+## したがって:
+##   - 突合は**行番号**で行う（--join row。既定）
+##   - **同じファイルを、同じ並び順で読まないと意味が変わる**
+##   - ファイルが違えば行番号も違う。**mesh2_convex7.gpkg を使うこと**
+JOIN <- .opt("--join", "row")
 mc <- intersect(c("meshcode", "MESHCODE", "mesh"), names(mesh))[1]
-has_eff <- if (!is.null(eff_codes) && !is.na(mc))
-             as.character(mesh[[mc]]) %in% eff_codes else rep(FALSE, nrow(mesh))
-if (!is.null(eff_codes) && !is.na(mc) && !any(has_eff))
-  cat("  ⚠ meshcode が一致しない。effort と mesh で符号の付け方が違う可能性\n")
+has_eff <- rep(FALSE, nrow(mesh))
+
+if (!is.null(eff_codes)) {
+  if (JOIN == "row") {
+    idx <- suppressWarnings(as.integer(eff_codes))
+    cat(sprintf("  突合: **行番号**（effort の meshcode = mesh の row_number）\n"))
+    cat(sprintf("    effort の meshcode の範囲: %d 〜 %d / mesh の行数: %d\n",
+                min(idx, na.rm = TRUE), max(idx, na.rm = TRUE), nrow(mesh)))
+    if (any(is.na(idx)))
+      cat("    ⚠ 整数にならない meshcode がある。行番号ではない可能性\n")
+    else if (max(idx, na.rm = TRUE) > nrow(mesh)) {
+      cat("    ⚠ **行番号が mesh の行数を超えている。ファイルが違う。**\n")
+      cat("      make_data&plot.R は mesh2_convex7.gpkg を使っている。--mesh で合わせること\n")
+    } else {
+      has_eff[idx[!is.na(idx)]] <- TRUE
+      cat(sprintf("    → %d セルに検出努力あり\n", sum(has_eff)))
+    }
+  } else {
+    if (is.na(mc)) stop("--join code だが mesh に meshcode 列が無い")
+    has_eff <- as.character(mesh[[mc]]) %in% eff_codes
+    cat(sprintf("  突合: meshcode 列 → %d セル一致\n", sum(has_eff)))
+    if (!any(has_eff))
+      cat("    ⚠ 一致ゼロ。effort の meshcode は行番号なので --join row を使うこと\n")
+  }
+}
+
+## --- メッシュの世代を並べて比べる（行番号は世代ごとに違う）------------------
+others <- setdiff(Sys.glob(file.path(dirname(MESH), "mesh2_convex*.gpkg")), MESH)
+if (length(others)) {
+  cat("\n  同じ場所にある他の世代:\n")
+  for (o in others) {
+    n <- tryCatch(nrow(sf::st_read(o, quiet = TRUE)), error = function(e) NA_integer_)
+    cat(sprintf("    %-28s %s セル%s\n", basename(o),
+                if (is.na(n)) "?" else format(n, big.mark = ","),
+                if (!is.na(n) && n == nrow(mesh)) "  ← 行数は同じ（並び順までは不明）" else ""))
+  }
+  cat("  ＊ **行番号で突合している以上、世代が違えば指す場所も違う。**\n")
+}
 
 ## --- 陸との重なり ------------------------------------------------------------
 on_land <- NULL

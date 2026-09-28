@@ -41,7 +41,9 @@ BAND_RDS    <- file.path(WORK_ROOT, "band_data_list_30sp_20251217.rds")
 BAND_CSV    <- file.path(WORK_ROOT, "band_data_20251204.csv")
 
 # 足環データのメッシュ（make_mesh_20251127.R の出力）。世代が複数ある。
-BAND_MESH   <- file.path(GRID_ROOT, "mesh2_convex3.gpkg")
+# **convex7 を使うこと。** effort$meshcode は make_data&plot.R:99-100 が
+# この gpkg に振った row_number() なので、**別の世代だと行番号が別の場所を指す**。
+BAND_MESH   <- file.path(GRID_ROOT, "mesh2_convex7.gpkg")
 
 # 陸のポリゴン。**メッシュを陸に切るかの判断に使う**
 # （examples/plot_mesh.R。reports/20260928_band_scale.md §2）。
