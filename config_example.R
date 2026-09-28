@@ -40,6 +40,15 @@ BEAR_MESH   <- "meshutm_0.5km_buff_land"        # st_read(BEAR_ROOT, BEAR_MESH)
 BAND_RDS    <- file.path(WORK_ROOT, "band_data_list_30sp_20251217.rds")
 BAND_CSV    <- file.path(WORK_ROOT, "band_data_20251204.csv")
 
+# 足環データのメッシュ（make_mesh_20251127.R の出力）。世代が複数ある。
+BAND_MESH   <- file.path(GRID_ROOT, "mesh2_convex3.gpkg")
+
+# 陸のポリゴン。**メッシュを陸に切るかの判断に使う**
+# （examples/plot_mesh.R。reports/20260928_band_scale.md §2）。
+# make_mesh_20251127.R:14 が読んでいるもの。ネットワークドライブにあるので
+# **マシンによって見えない**。見えない環境では plot_mesh.R に --land で渡す。
+LAND_SHP    <- "S:/common/personal_backup/kumada/Virbsagi/R/Japan_merge2.shp"
+
 # --- 存在確認 ---------------------------------------------------------------
 #
 # パスがずれていたとき、スクリプトの奥で「file not found」になるのではなく

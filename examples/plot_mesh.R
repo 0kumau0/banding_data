@@ -39,15 +39,21 @@ if (length(.bad)) stop("知らない引数: ", paste(.bad, collapse = " "))
 
 if (!requireNamespace("sf", quietly = TRUE)) stop("sf パッケージが要ります")
 
-MESH <- .opt("--mesh", "../../griddata/mesh2_convex3.gpkg")
 OUT  <- .opt("--out",  "reports/figures/band-fig-mesh.png")
 USE_EFFORT <- !("--no-effort" %in% .args)
 
-## 陸のポリゴン。候補を順に試す（環境によって置き場所が違う）
+## マシンごとに違うパスは config.R に集約してある（BAND_MESH / LAND_SHP / BAND_RDS）。
+## 引数で渡されたものが最優先。
+if (file.exists("config.R")) source("config.R", encoding = "UTF-8")
+MESH <- .opt("--mesh", if (exists("BAND_MESH")) BAND_MESH else
+                       "../../griddata/mesh2_convex3.gpkg")
+
+## 陸のポリゴン。config.R の LAND_SHP を最優先にし、無ければ候補を順に試す。
+## **LAND_SHP はネットワークドライブ（S:）にあるので、見えない環境がある。**
 LAND_CANDIDATES <- c(.opt("--land", ""),
+                     if (exists("LAND_SHP")) LAND_SHP else NULL,
                      "../../griddata/QGIS/poly_20251210.shp",
-                     "../../griddata/Japan_merge2.shp",
-                     "S:/common/personal_backup/kumada/Virbsagi/R/Japan_merge2.shp")
+                     "../../griddata/Japan_merge2.shp")
 LAND <- LAND_CANDIDATES[nzchar(LAND_CANDIDATES) & file.exists(LAND_CANDIDATES)][1]
 
 if (!file.exists(MESH))
@@ -71,8 +77,7 @@ if (is.finite(ar)) {
 
 ## --- 検出努力のあるセル ------------------------------------------------------
 eff_codes <- NULL
-if (USE_EFFORT && file.exists("config.R")) {
-  source("config.R", encoding = "UTF-8")
+if (USE_EFFORT) {                      # config.R は冒頭で読み込み済み
   rds <- .opt("--rds", if (exists("BAND_RDS")) BAND_RDS else "")
   if (nzchar(rds) && file.exists(rds)) {
     d <- readRDS(rds)
