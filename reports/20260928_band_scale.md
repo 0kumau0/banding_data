@@ -359,16 +359,45 @@ dataset$resolution <- c(x = 10, y = 10)   # coords が km なので
 
 `area <- rep(100, ...)`（`:212`）と整合する。
 
-### 不具合3: `effort_occ` が存在しない可能性 — `:271`
+### 不具合3（確認済み）: `effort_occ` が無い — `:271`
 
-`functions.R:115` の `make.effort2` は `distinct(YEAR, meshcode, effort)` を返す。
-**`effort_occ` という列は無い**（rds の `effort` も `YEAR / meshcode / effort / effortID`）。
+**2026-09-28 にユーザが確認。保存されている `effort` は4列で `effort_occ` が無い。**
 
-```r
-:271  dataset$effort_occ <- effort$effort_occ   # NULL になっていないか
+```
+    YEAR meshcode effort effortID     ← effort_occ が無い
 ```
 
-occasion は年にするはずなので、`as.integer(factor(effort$YEAR))`（2009〜2018 → 1〜10）が要る。
+```r
+:271  dataset$effort_occ <- effort$effort_occ   # → NULL
+```
+
+**R は存在しない列を参照してもエラーにならず `NULL` を返す。**
+`NULL` を代入すると要素そのものが消えるので、**エラーを出さないまま
+「機会の情報が無い」状態でモデルが組まれる**。10年ぶんの調査が1機会として
+扱われれば、当然結果は変わる。
+
+> **訂正の経緯**: 当初「`make.effort2` が `distinct(YEAR, meshcode, effort)` を
+> 返すので `effort_occ` は無い」と書いたが、**読み落としだった**。
+> `functions.R:111` で付け、`:115` の `distinct` で落ち、**`:117` で付け直している**。
+> **現行の関数は `effort_occ` を返す。**
+> **無いのは保存済みの `effort` のほうで、これは `:117` が入る前に作られたもの。**
+> `make.effort2(band_data)` を実行し直せば付く。**どちらの経路を使うかで変わる。**
+
+**直し方:**
+
+```r
+dataset$effort_occ <- as.integer(effort$YEAR - 2008)    # 2009→1 … 2018→10
+# 年が飛んでいても安全にするなら
+dataset$effort_occ <- as.integer(factor(effort$YEAR))
+```
+
+**確認:**
+
+```r
+length(dataset$effort_occ)    # 4229（0 なら NULL）
+range(dataset$effort_occ)     # 1 10
+table(dataset$effort_occ)     # 年ごとの調査数。努力の偏りも見える
+```
 
 あわせて `effort_loc`（`:259-261`）も:
 
