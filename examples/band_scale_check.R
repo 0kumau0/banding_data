@@ -117,6 +117,20 @@ for (i in seq_len(min(length(d), 30L))) {
 if (length(d) > 30L) cat(sprintf("  …（全 %d 要素）\n", length(d)))
 
 ## --- 中身を探す --------------------------------------------------------------
+## detect_list に名前が無く splist がある場合は、**先頭から順に対応する**と見なして
+## 種名を付ける（2026-09-28 の実データがこの形。splist 236種のうち先頭30種にデータがある）。
+sp_names <- NULL
+for (nm in c("splist", "SPLIST", "species")) if (!is.null(d[[nm]])) sp_names <- d[[nm]]
+for (nm in c("detect_list", "detect", "detectmat")) {
+  if (!is.null(d[[nm]]) && is.list(d[[nm]]) && is.null(names(d[[nm]])) &&
+      !is.null(sp_names) && length(sp_names) >= length(d[[nm]])) {
+    names(d[[nm]]) <- sp_names[seq_along(d[[nm]])]
+    cat("\n  ", nm, " に名前が無いので splist の先頭 ", length(d[[nm]]),
+        " 種を順に割り当てた\n", sep = "")
+    cat("    ⚠ 並び順が splist と一致している前提。違っていたら種名がずれる\n")
+  }
+}
+
 found <- find_objs(d)
 mats <- Filter(function(f) f$kind == "mat", found)
 dfs  <- Filter(function(f) f$kind == "df",  found)
