@@ -73,41 +73,76 @@ if (!is.null(names(d)))
   cat("  names  : ", paste(utils::head(names(d), 10), collapse = ", "),
       if (length(d) > 10) sprintf(" ...（全 %d 件）", length(d)) else "", "\n", sep = "")
 
-## data.frame そのものなら1要素のリストとして扱い、以降を共通化する
 if (is.data.frame(d)) {
   cat("  → data.frame なので、全体を1つのまとまりとして扱う\n")
   d <- list(all = d)
 }
 if (!is.list(d)) stop("リストでも data.frame でもありません。手作業で確認してください。")
 
-el <- d[[1]]
-cat("\n  1要素目の構造:\n")
-cat("    class : ", paste(class(el), collapse = ", "), "\n", sep = "")
-if (is.data.frame(el)) {
-  cat("    行数  : ", nrow(el), " / 列数: ", ncol(el), "\n", sep = "")
-  cat("    列名  : ", paste(names(el), collapse = ", "), "\n", sep = "")
-} else {
-  cat("    ⚠ data.frame ではない。中身:\n")
-  utils::str(el, max.level = 1)
-  stop("要素が data.frame でないので、この先の集計はできません。\n",
-       "構造を見て、このスクリプトを直してください。")
+## 中身の形を仮定しない。**入れ子のどこに data.frame があっても拾う。**
+## 2026-09-28: 1要素目が236種の種名ベクトルで、データはもっと深い階層にあった。
+## 「1要素目が data.frame」という仮定で書いたら止まったので、探索に変えた。
+find_dfs <- function(x, path = "", depth = 0, max_depth = 4) {
+  if (is.data.frame(x)) return(list(list(path = path, df = x)))
+  if (!is.list(x) || depth >= max_depth) return(list())
+  nms <- names(x); if (is.null(nms)) nms <- rep("", length(x))
+  out <- list()
+  for (i in seq_along(x)) {
+    lbl <- if (nzchar(nms[i])) nms[i] else paste0("[[", i, "]]")
+    out <- c(out, find_dfs(x[[i]], paste0(path, "$", lbl), depth + 1L, max_depth))
+  }
+  out
 }
 
-## --- 2. 個体を識別する列を決める --------------------------------------------
-##
-## functions.R が GUID + RING で個体を識別しているので、それに合わせる。
-## 列名が違う場合はここで止めて、何があるかを示す。
-ID_COLS <- intersect(c("GUID", "RING"), names(el))
-if (!length(ID_COLS)) {
-  cand <- grep("ring|guid|id$|indiv", names(el), ignore.case = TRUE, value = TRUE)
-  stop("個体を識別する列（GUID / RING）が見つかりません。\n",
-       "候補になりそうな列: ", if (length(cand)) paste(cand, collapse = ", ") else "(なし)",
-       "\n列名を確認して ID_COLS を直してください。")
+## --- 最上位の要素をすべて要約する（何が入っているかを見せる）----------------
+cat("\n-- 最上位の要素 --\n")
+nms <- names(d); if (is.null(nms)) nms <- rep("", length(d))
+for (i in seq_len(min(length(d), 30L))) {
+  x <- d[[i]]
+  lbl <- if (nzchar(nms[i])) nms[i] else paste0("[[", i, "]]")
+  desc <- if (is.data.frame(x)) sprintf("data.frame %d行 x %d列", nrow(x), ncol(x))
+          else if (is.list(x))  sprintf("list（長さ %d）", length(x))
+          else                  sprintf("%s（長さ %d）", paste(class(x), collapse = "/"), length(x))
+  cat(sprintf("  %-28s %s\n", lbl, desc))
+  if (!is.data.frame(x) && !is.list(x) && length(x))
+    cat("      先頭: ", paste(utils::head(as.character(x), 5), collapse = ", "), " ...\n", sep = "")
 }
+if (length(d) > 30L) cat(sprintf("  …（全 %d 要素）\n", length(d)))
+
+## --- data.frame を探す -------------------------------------------------------
+found <- find_dfs(d)
+cat(sprintf("\n-- 見つかった data.frame: %d 件 --\n", length(found)))
+if (!length(found))
+  stop("data.frame が1つも見つかりません（4階層まで探索）。\n",
+       "上の一覧を見て、どこに捕獲記録があるか教えてください。")
+
+ID_CANDIDATES <- c("GUID", "RING")
+has_id <- sapply(found, function(f) length(intersect(ID_CANDIDATES, names(f$df))) > 0)
+
+for (i in seq_len(min(length(found), 12L))) {
+  f <- found[[i]]
+  cat(sprintf("  %-34s %6d行 x %3d列  %s\n", f$path, nrow(f$df), ncol(f$df),
+              if (has_id[i]) "← 個体IDあり" else ""))
+  if (i <= 3L || has_id[i])
+    cat("      列: ", paste(utils::head(names(f$df), 15), collapse = ", "),
+        if (ncol(f$df) > 15) " ..." else "", "\n", sep = "")
+}
+if (length(found) > 12L) cat(sprintf("  …（全 %d 件）\n", length(found)))
+
+if (!any(has_id)) {
+  stop("GUID / RING を持つ data.frame がありません。\n",
+       "上の列名を見て、個体を識別できる列を教えてください（ID_CANDIDATES を直します）。")
+}
+
+found <- found[has_id]
+el <- found[[1]]$df
+ID_COLS <- intersect(ID_CANDIDATES, names(el))
 cat("\n  個体の識別に使う列: ", paste(ID_COLS, collapse = " + "), "\n", sep = "")
+cat("  集計する data.frame: ", length(found), " 件\n", sep = "")
 
 PLACE_COL <- intersect(c("PLACE", "PLACECODE", "place"), names(el))[1]
 DATE_COL  <- intersect(c("DATE", "YEAR", "date", "year"), names(el))[1]
+SP_COL    <- intersect(c("SPNAMK", "SPNAME", "species"), names(el))[1]
 
 ## --- 3. まとまりごとに数える ------------------------------------------------
 one <- function(x, label) {
@@ -145,9 +180,22 @@ one <- function(x, label) {
     stringsAsFactors = FALSE)
 }
 
-rows <- Filter(Negate(is.null),
-               lapply(seq_along(d), function(i)
-                 one(d[[i]], if (!is.null(names(d))) names(d)[i] else paste0("[", i, "]"))))
+## まとまりの切り方を、見つかった形に合わせる。
+##   data.frame が複数    … 1つずつを1行にする（種ごとのリストなど）
+##   data.frame が1つだけ … 種の列があれば種で割る。無ければ全体で1行
+if (length(found) > 1L) {
+  cat("  → data.frame ごとに集計する\n")
+  rows <- lapply(found, function(f) one(f$df, sub("^\\$", "", f$path)))
+} else if (!is.na(SP_COL)) {
+  cat("  → 1つの data.frame を列 ", SP_COL, " で分けて集計する\n", sep = "")
+  sp <- as.character(el[[SP_COL]])
+  rows <- lapply(unique(sp[!is.na(sp)]),
+                 function(s) one(el[sp == s & !is.na(sp), , drop = FALSE], s))
+} else {
+  cat("  → 種を表す列が無いので、全体を1つとして集計する\n")
+  rows <- list(one(el, "all"))
+}
+rows <- Filter(Negate(is.null), rows)
 if (!length(rows)) stop("集計できるまとまりがありませんでした。")
 tab <- do.call(rbind, rows)
 tab <- tab[order(-tab$n_ind), ]
