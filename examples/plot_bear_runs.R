@@ -33,8 +33,9 @@ PAR_NAMES <- c("dens_0", "conn_0", "conn_agri", "conn_wtr", "g0_1")
 ALPHA_BASE <- c(dens_0 = 0.02, conn_0 = 0.03, conn_agri = 0.02,
                 conn_wtr = 0.02, g0_1 = 0.02)
 INIT_FAR <- c(dens_0 = -1, conn_0 = -2, conn_agri = 0, conn_wtr = 0, g0_1 = -5)
-OUT1 <- "reports/figures/bear-fig-traces.png"
-OUT2 <- "reports/figures/bear-fig-approach.png"
+OUT0 <- "reports/figures/bear-fig-traces-raw.png"   # 生の係数（従来の見せ方）
+OUT1 <- "reports/figures/bear-fig-traces.png"       # 標準誤差の単位
+OUT2 <- "reports/figures/bear-fig-approach.png"     # 歩幅の比
 COLS <- c("#a8402c", "#1f6f80", "#557a4b", "#a8761f")
 
 runs <- lapply(files, function(f) {
@@ -69,6 +70,40 @@ for (k in seq_along(runs)) {
 }
 
 dir.create("reports/figures", showWarnings = FALSE, recursive = TRUE)
+
+## --- 図0: 生の係数（従来の見せ方）-------------------------------------------
+##
+## **標準誤差の単位（図1）と併記する。** 両方に役割がある:
+##   生の値 … 係数が実際にどの値を取ったか。解釈に使うのはこちら
+##   SE 単位 … 到達したかどうかの判定。係数ごとにスケールが違うので、
+##             生の値のままでは「近い」かを判断できない
+## 6枚目は SGD の目的関数。**参照解の対数尤度とは別の関数なので基準線は引かない**
+## （引き算に意味が無い。2026-09-28 にこれで誤った結論を出しかけた）。
+png(OUT0, width = 1200, height = 780, res = 115)
+op <- par(mfrow = c(2, 3), mar = c(4.2, 4.4, 3, 1))
+for (j in seq_along(PAR_NAMES)) {
+  nm <- PAR_NAMES[j]
+  yr <- range(unlist(lapply(runs, function(r) r$P[, j])), REF[nm], INIT_FAR[nm])
+  plot(NA, xlim = c(1, NMAX), ylim = yr, xlab = "Iteration",
+       ylab = "Estimate", main = nm)
+  abline(h = REF[nm], col = "red", lwd = 2, lty = 2)
+  for (k in seq_along(runs))
+    lines(seq_len(runs[[k]]$n), runs[[k]]$P[, j], col = COLS[k], lwd = 1.8)
+  if (j == 1) legend("bottomright", legend = c(names(runs), "reference (BFGS)"),
+                     col = c(COLS[seq_along(runs)], "red"),
+                     lty = c(rep(1, length(runs)), 2),
+                     lwd = 1.8, bty = "n", cex = 0.75)
+}
+LL <- lapply(runs, function(r) { e <- new.env(); load(r$file, envir = e)
+                                 e$trace_ll[seq_len(r$n)] })
+plot(NA, xlim = c(1, NMAX), ylim = range(unlist(LL), na.rm = TRUE),
+     xlab = "Iteration", ylab = "SGD objective",
+     main = "SGD objective (not the reference scale)")
+for (k in seq_along(runs)) lines(seq_len(runs[[k]]$n), LL[[k]], col = COLS[k], lwd = 1.8)
+mtext("sgd_loglik(), offset from loglf() by a constant", side = 3, line = 0.1,
+      cex = 0.65, col = "grey30")
+par(op); dev.off()
+cat("図0: ", OUT0, "\n", sep = "")
 
 ## --- 図1: 係数の推移。参照解を 0 に、縦軸を標準誤差の単位にする -------------
 ## 生の値ではなく「参照解から標準誤差いくつ離れているか」を描く。
