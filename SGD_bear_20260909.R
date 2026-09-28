@@ -909,11 +909,42 @@ if (RUN_SGD) {
 
   final_par <- current_par
 
+  ## --- ★ 最終点で全データの対数尤度を1回だけ測る（2026-09-28 に追加）--------
+  ##
+  ## **trace_ll は SGD の目的関数 sgd_loglik() であって、参照解の対数尤度
+  ## secrad_obj$loglf() とは別の関数。** ポアソン項と履歴項の組み立て方が違うので
+  ## 定数ぶんずれ、sampling_rate = 1.0 でもずれる。
+  ##
+  ## これを知らずに両者を引き算すると、**係数が参照解と小数3桁まで一致している
+  ## 実行に対して「72.6 遅れている」という数字が出る**（b90a4 で実際に起きた）。
+  ## 同じ誤りを 2026-09-16 にシミュレーション側で見つけて直していたが、
+  ## こちらへ持ってきていなかった。
+  ##
+  ## loglf 1回（クマ規模で約3分）で、参照解と同じ物差しの値が手に入る。
+  ## 数十時間の実行に対して無視できる費用。
+  say("最終点で全データの対数尤度を測定中（loglf 1回。参照解と同じ物差し）...")
+  t_ll <- Sys.time()
+  ll_full_final <- tryCatch(secrad_obj$loglf(final_par, loglfscale = 1),
+                            error = function(e) {
+                              say("  測定に失敗: ", conditionMessage(e)); NA_real_ })
+  if (is.finite(ll_full_final)) {
+    say(sprintf("  全データ logL = %.6f（%.0f秒）", ll_full_final,
+                as.numeric(difftime(Sys.time(), t_ll, units = "secs"))))
+    if (!is.null(secrad_res)) {
+      gap <- (-secrad_res$value) - ll_full_final
+      say(sprintf("  参照解との差 = %+.6f  （正 = SGD が届いていない）", gap))
+      if (gap < -0.01)
+        say("  **参照解より高い。参照解が最大点でない可能性。**",
+            " examples/verify_reference.R で確認すること。")
+    }
+  }
+
 } else {
   say("Adam-SGD をスキップ（RUN_SGD = FALSE）")
   final_par <- NULL; time_adam_sgd <- NA_real_; iter_done <- 0L
   trace_par <- trace_grad <- trace_step <- NULL; trace_ll <- NULL
   alpha_vec <- max_step <- NULL; sample_size <- NA_integer_
+  ll_full_final <- NA_real_
 }
 
 
@@ -947,7 +978,8 @@ if (!is.null(final_par)) {
 }
 
 
-save(secrad_res, ref_par, final_par, trace_par, trace_ll, trace_grad, trace_step,
+save(secrad_res, ref_par, final_par, ll_full_final,
+     trace_par, trace_ll, trace_grad, trace_step,
      iter_done, time_adam_sgd, alpha_vec, max_step, sample_size,
      SAMPLING_RATE, BETA1, BETA2, EPS_ADAM, GRAD_EPS, INIT_MODE,
      RUN_TAG, ALPHA_MULT, HESSIAN,
