@@ -82,17 +82,24 @@ if (!is.list(d)) stop("リストでも data.frame でもありません。手作
 ## 中身の形を仮定しない。**入れ子のどこに data.frame があっても拾う。**
 ## 2026-09-28: 1要素目が236種の種名ベクトルで、データはもっと深い階層にあった。
 ## 「1要素目が data.frame」という仮定で書いたら止まったので、探索に変えた。
-find_dfs <- function(x, path = "", depth = 0, max_depth = 4) {
-  if (is.data.frame(x)) return(list(list(path = path, df = x)))
+## data.frame と**行列（疎行列を含む）**の両方を拾う。
+## 足環データは ADCR 用に集計済みで、個体は検出行列の列として入っている
+## （クマの detectmat_231225.csv と同じ形）。捕獲記録の表ではない。
+is_mat <- function(x) is.matrix(x) || inherits(x, "Matrix")
+find_objs <- function(x, path = "", depth = 0, max_depth = 4) {
+  if (is.data.frame(x)) return(list(list(path = path, obj = x, kind = "df")))
+  if (is_mat(x))        return(list(list(path = path, obj = x, kind = "mat")))
   if (!is.list(x) || depth >= max_depth) return(list())
   nms <- names(x); if (is.null(nms)) nms <- rep("", length(x))
   out <- list()
   for (i in seq_along(x)) {
     lbl <- if (nzchar(nms[i])) nms[i] else paste0("[[", i, "]]")
-    out <- c(out, find_dfs(x[[i]], paste0(path, "$", lbl), depth + 1L, max_depth))
+    out <- c(out, find_objs(x[[i]], paste0(path, "$", lbl), depth + 1L, max_depth))
   }
   out
 }
+## 疎行列でも動く列和
+csum <- function(m) if (inherits(m, "Matrix")) Matrix::colSums(m) else colSums(m)
 
 ## --- 最上位の要素をすべて要約する（何が入っているかを見せる）----------------
 cat("\n-- 最上位の要素 --\n")
@@ -109,40 +116,63 @@ for (i in seq_len(min(length(d), 30L))) {
 }
 if (length(d) > 30L) cat(sprintf("  …（全 %d 要素）\n", length(d)))
 
-## --- data.frame を探す -------------------------------------------------------
-found <- find_dfs(d)
-cat(sprintf("\n-- 見つかった data.frame: %d 件 --\n", length(found)))
-if (!length(found))
-  stop("data.frame が1つも見つかりません（4階層まで探索）。\n",
-       "上の一覧を見て、どこに捕獲記録があるか教えてください。")
+## --- 中身を探す --------------------------------------------------------------
+found <- find_objs(d)
+mats <- Filter(function(f) f$kind == "mat", found)
+dfs  <- Filter(function(f) f$kind == "df",  found)
 
-ID_CANDIDATES <- c("GUID", "RING")
-has_id <- sapply(found, function(f) length(intersect(ID_CANDIDATES, names(f$df))) > 0)
-
-for (i in seq_len(min(length(found), 12L))) {
-  f <- found[[i]]
-  cat(sprintf("  %-34s %6d行 x %3d列  %s\n", f$path, nrow(f$df), ncol(f$df),
-              if (has_id[i]) "← 個体IDあり" else ""))
-  if (i <= 3L || has_id[i])
-    cat("      列: ", paste(utils::head(names(f$df), 15), collapse = ", "),
-        if (ncol(f$df) > 15) " ..." else "", "\n", sep = "")
-}
+cat(sprintf("\n-- 見つかったもの: 行列 %d 件 / data.frame %d 件 --\n",
+            length(mats), length(dfs)))
+for (f in utils::head(c(mats, dfs), 12L))
+  cat(sprintf("  %-30s %s %6d行 x %5d列 %s\n", f$path,
+              if (f$kind == "mat") "行列      " else "data.frame",
+              nrow(f$obj), ncol(f$obj),
+              if (f$kind == "df") paste0("列: ", paste(utils::head(names(f$obj), 8),
+                                                       collapse = ", ")) else
+                paste0("(", class(f$obj)[1], ")")))
 if (length(found) > 12L) cat(sprintf("  …（全 %d 件）\n", length(found)))
 
-if (!any(has_id)) {
-  stop("GUID / RING を持つ data.frame がありません。\n",
-       "上の列名を見て、個体を識別できる列を教えてください（ID_CANDIDATES を直します）。")
+## --- 努力の表（effort）------------------------------------------------------
+## クマと同じ形なら、行 = 検出努力 / 列 = 個体。effort の行数が検出行列の行数と一致する。
+eff <- NULL
+for (f in dfs)
+  if (all(c("effort") %in% tolower(names(f$obj))) ||
+      length(intersect(c("meshcode", "effortID"), names(f$obj))) >= 1L) { eff <- f; break }
+
+n_effort <- NA_integer_; n_mesh <- NA_integer_; yr <- NULL
+if (!is.null(eff)) {
+  e <- eff$obj
+  n_effort <- nrow(e)
+  mc <- intersect(c("meshcode", "MESHCODE", "mesh"), names(e))[1]
+  if (!is.na(mc)) n_mesh <- length(unique(e[[mc]]))
+  yc <- intersect(c("YEAR", "year"), names(e))[1]
+  if (!is.na(yc)) yr <- range(e[[yc]], na.rm = TRUE)
+  cat("\n-- 検出努力（", sub("^\\$", "", eff$path), "）--\n", sep = "")
+  cat(sprintf("  行数（検出努力の数）: %d\n", n_effort))
+  if (!is.na(n_mesh)) cat(sprintf("  努力が置かれたメッシュ: %d\n", n_mesh))
+  if (!is.null(yr))   cat(sprintf("  年の範囲: %s 〜 %s\n", yr[1], yr[2]))
 }
 
-found <- found[has_id]
-el <- found[[1]]$df
-ID_COLS <- intersect(ID_CANDIDATES, names(el))
-cat("\n  個体の識別に使う列: ", paste(ID_COLS, collapse = " + "), "\n", sep = "")
-cat("  集計する data.frame: ", length(found), " 件\n", sep = "")
+## --- 集計の対象を決める ------------------------------------------------------
+## 行列があれば ADCR 形式（集計済み）。無ければ捕獲記録の表を探す。
+MODE <- if (length(mats)) "detect" else "records"
+cat("\n  集計の形式: ",
+    if (MODE == "detect") "ADCR形式（検出行列。列 = 個体）"
+    else "捕獲記録の表（GUID + RING で個体を識別）", "\n", sep = "")
 
-PLACE_COL <- intersect(c("PLACE", "PLACECODE", "place"), names(el))[1]
-DATE_COL  <- intersect(c("DATE", "YEAR", "date", "year"), names(el))[1]
-SP_COL    <- intersect(c("SPNAMK", "SPNAME", "species"), names(el))[1]
+if (MODE == "records") {
+  ID_CANDIDATES <- c("GUID", "RING")
+  has_id <- sapply(dfs, function(f) length(intersect(ID_CANDIDATES, names(f$obj))) > 0)
+  if (!any(has_id))
+    stop("検出行列も、GUID / RING を持つ表も見つかりません。\n",
+         "上の一覧を見て、どこに個体の情報があるか教えてください。")
+  dfs <- dfs[has_id]
+  el <- dfs[[1]]$obj
+  ID_COLS <- intersect(ID_CANDIDATES, names(el))
+  PLACE_COL <- intersect(c("PLACE", "PLACECODE", "place"), names(el))[1]
+  SP_COL    <- intersect(c("SPNAMK", "SPNAME", "species"), names(el))[1]
+  cat("  個体の識別に使う列: ", paste(ID_COLS, collapse = " + "), "\n", sep = "")
+}
 
 ## --- 3. まとまりごとに数える ------------------------------------------------
 one <- function(x, label) {
@@ -183,9 +213,47 @@ one <- function(x, label) {
 ## まとまりの切り方を、見つかった形に合わせる。
 ##   data.frame が複数    … 1つずつを1行にする（種ごとのリストなど）
 ##   data.frame が1つだけ … 種の列があれば種で割る。無ければ全体で1行
-if (length(found) > 1L) {
+## --- 検出行列から数える（ADCR 形式）-----------------------------------------
+## **行 = 検出努力 / 列 = 個体**（secrad.r の self$nind = ncol(detect)）。
+## 向きを間違えると個体数が検出器数に化けるので、effort の行数と突き合わせて確かめる。
+rsum <- function(m) if (inherits(m, "Matrix")) Matrix::rowSums(m) else rowSums(m)
+
+one_detect <- function(m, label) {
+  if (is.null(m) || !nrow(m) || !ncol(m)) return(NULL)
+  cnt    <- csum(m)                      # 個体ごとの検出回数
+  n_ind  <- ncol(m)
+  n_rec  <- sum(cnt)
+  n_mult <- sum(cnt >  1)
+  n_sing <- sum(cnt == 1)
+  eff_ <- function(r) n_mult + r * n_sing
+  data.frame(
+    group = label, n_record = n_rec, n_ind = n_ind,
+    n_multi = n_mult, n_single = n_sing,
+    det_per_ind = n_rec / n_ind, multi_frac = n_mult / n_ind,
+    max_cap = max(cnt),
+    n_place = sum(rsum(m) > 0),          # 検出があった努力の数
+    eff_nind_r10 = eff_(0.10), speedup_r10 = (n_ind / eff_(0.10))^1.78,
+    eff_nind_r20 = eff_(0.20), speedup_r20 = (n_ind / eff_(0.20))^1.78,
+    stringsAsFactors = FALSE)
+}
+
+if (MODE == "detect") {
+  ## 向きの確認。effort の行数と検出行列の行数が一致するはず
+  if (!is.na(n_effort)) {
+    nr <- sapply(mats, function(f) nrow(f$obj))
+    if (all(nr == n_effort)) {
+      cat("  ✓ 検出行列の行数が検出努力の数（", n_effort, "）と一致。",
+          "行 = 努力 / 列 = 個体 で読む\n", sep = "")
+    } else {
+      cat("  ⚠ 検出行列の行数（", paste(utils::head(unique(nr), 5), collapse = ", "),
+          "）が検出努力の数（", n_effort, "）と一致しない。\n", sep = "")
+      cat("    向きが逆の可能性がある。**個体数が検出器数に化けていないか確認すること。**\n")
+    }
+  }
+  rows <- lapply(mats, function(f) one_detect(f$obj, sub("^\\$detect_list\\$|^\\$", "", f$path)))
+} else if (length(dfs) > 1L) {
   cat("  → data.frame ごとに集計する\n")
-  rows <- lapply(found, function(f) one(f$df, sub("^\\$", "", f$path)))
+  rows <- lapply(dfs, function(f) one(f$obj, sub("^\\$", "", f$path)))
 } else if (!is.na(SP_COL)) {
   cat("  → 1つの data.frame を列 ", SP_COL, " で分けて集計する\n", sep = "")
   sp <- as.character(el[[SP_COL]])
@@ -247,6 +315,13 @@ cat("  ＊ 指数 1.78 は results/pcap_bench.csv の実測。複数回個体は
 cat("    単回の割合が高いほど間引きが効く。\n")
 
 cat("\n-- ③ ncell --\n")
+if (!is.na(n_mesh)) {
+  cat(sprintf("  検出努力が置かれたメッシュ: **%d**\n", n_mesh))
+  cat("  ＊ これは努力のあるメッシュの数。**ADCR の ncell は解析範囲全体のメッシュ数**で、\n")
+  cat("    ふつうこれより大きい（クマは努力227に対し ncell 8497）。\n")
+  cat(sprintf("    クマの比（8497/227 = 37倍）をあてはめると ncell は %d 前後になりうる。\n",
+              round(n_mesh * 8497 / 227)))
+}
 if (nzchar(MESHFILE) && file.exists(MESHFILE)) {
   if (requireNamespace("sf", quietly = TRUE)) {
     m <- sf::st_read(MESHFILE, quiet = TRUE)
@@ -256,7 +331,7 @@ if (nzchar(MESHFILE) && file.exists(MESHFILE)) {
                 nrow(m) / 8497, (nrow(m) / 8497)^2.5))
   } else cat("  sf パッケージが無いので読めません\n")
 } else {
-  cat("  このスクリプトでは数えない（rds に入っていない）。\n")
+  cat("  解析範囲全体の ncell は、この rds には入っていない。\n")
   cat("  make_mesh_20251127.R の出力を --mesh <ファイル> で渡すと数える。\n")
 }
 
