@@ -37,7 +37,9 @@ BEAR_MESH   <- "meshutm_0.5km_buff_land"        # st_read(BEAR_ROOT, BEAR_MESH)
 
 # 足環データの中間生成物。段階によって差し替わるので、手元にあるものを指すこと。
 # （このPCには 20251205 / 20251217 / kanto / 素の4種類がある）
-BAND_RDS    <- file.path(WORK_ROOT, "band_data_list_30sp_20251217.rds")
+# **20251218 を使うこと。** 20251217 の effort は4列で effort_occ が無い
+# （functions.R:117 が入る前に作られたもの）。1218 は5列で effort_occ を持つ。
+BAND_RDS    <- file.path(WORK_ROOT, "band_data_list_30sp_20251218.rds")
 BAND_CSV    <- file.path(WORK_ROOT, "band_data_20251204.csv")
 
 # 足環データのメッシュ（make_mesh_20251127.R の出力）。世代が複数ある。
