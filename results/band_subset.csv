@@ -1,2 +1,0 @@
-"species","mesh_all","mesh_sub","match_by","ncell_all","ncell_sub","neffort_all","neffort_sub","ncell_eff_all","ncell_eff_sub","nocc_all","nocc_sub","nind_all","nind_sub","ndet_all","ndet_sub","nmulti_sub","nsingle_sub","det_per_ind_all","det_per_ind_sub","nmoved_all","nmoved_sub","ncross","lost_cap","loglf_now_sub_sec","loglf_fix_sub_sec"
-"シジュウカラ","mesh2_convex7.gpkg","mesh2_convex_kanto.gpkg","JIS メッシュコード列 `meshcode` の一致",13454,943,4229,958,964,188,10,10,33550,16308,40406,21118,3048,13260,1.20435171385991,1.29494726514594,17,5,1,1,5613.36166794113,529.936380835307
