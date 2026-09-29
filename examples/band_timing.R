@@ -245,12 +245,21 @@ if (RATE >= 1 && exists("cnt")) {
   n_multi <- sum(cnt > 1); n_single <- sum(cnt == 1)
   say("")
   say("   間引いた場合（複数回は全部使うので rate に比例しない）:")
-  for (r in c(0.5, 0.2, 0.1, 0.05)) {
+  for (r in c(0.5, 0.2, 0.1, 0.05, 0.02, 0.01)) {
     ne <- n_multi + floor(n_single * r)
     say(sprintf("     rate %.2f → nind %6d : 現行 %-10s / 修正版 %s",
                 r, ne, fmt_t(est_pcap(ncell, ne, neffort)),
                 fmt_t(est_pcap(ncell, ne, neffort, fixed = TRUE))))
   }
+  ## ★ **間引きには下限がある。** 複数回捕獲個体は毎回全部使う設計なので、
+  ##   rate をいくら下げても nind は n_multi を下回らない。
+  ##   この行が「間引きで買える最大の速度」。ここでも足りないなら、
+  ##   **間引きは解にならない**（範囲を狭めるか pcap を直すしかない）
+  say(sprintf("     ＊ 下限   → nind %6d : 現行 %-10s / 修正版 %s",
+              n_multi, fmt_t(est_pcap(ncell, n_multi, neffort)),
+              fmt_t(est_pcap(ncell, n_multi, neffort, fixed = TRUE))))
+  say(sprintf("       （複数回捕獲 %d 個体は毎回全部使うので、これ以上は減らせない）",
+              n_multi))
 }
 stopifnot(is.finite(t_now), is.finite(t_fix))
 
