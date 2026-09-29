@@ -37,7 +37,8 @@
   if (is.na(i) || i == length(.args)) default else .args[i + 1L]
 }
 .bad <- setdiff(grep("^--", .args, value = TRUE),
-                c("--species", "--rate", "--reps", "--threads", "--mesh", "--rds"))
+                c("--species", "--rate", "--reps", "--threads", "--mesh", "--rds",
+                  "--force"))
 if (length(.bad)) stop("知らない引数: ", paste(.bad, collapse = " "))
 
 SPECIES <- .opt("--species", "シジュウカラ")
@@ -123,11 +124,39 @@ effort_occ <- if (!is.null(effort$effort_occ)) {
 }
 effort_vec <- as.numeric(effort$effort)
 
+## --- ★ effort_occ は 1..nocc の連番でなければならない ----------------------
+##
+## **これを確かめないと Segmentation fault になる。**
+##
+## `secrad.r:318` が `srv(j, effort_occ(k)-1)` と書いている。Eigen の添字なので
+## **境界検査が無い**。`srv` は `add_obs`（`secrad.r:1275`）が
+## `maxocc <- max(effort_occ)` で確保する nind × maxocc 行列なので、
+##
+##   - 値に 0 や NA があれば添字が −1 以下 → **範囲外読み出し = segfault**
+##   - 値が「年」そのもの（2009〜2018）だと maxocc = 2018。
+##     `srv` が nind × 2018（33,551個体で 542MB）になり、
+##     `secrad.r:1133` の機会ループが 10回ではなく **2,018回**回る。
+##     `loglambda.ad` 側の `occcov[effort_occ]` も範囲外
+##
+## 連番でなければ factor で振り直す（`else` 側と同じ扱いに揃える）。
+if (anyNA(effort_occ)) stop("effort_occ に NA があります: ", sum(is.na(effort_occ)), "件")
+occ_u <- sort(unique(effort_occ))
+if (!identical(occ_u, seq_along(occ_u))) {
+  say(sprintf("⚠ effort_occ が 1..%d の連番ではない（範囲 %d〜%d、%d 水準）。振り直す",
+              length(occ_u), min(occ_u), max(occ_u), length(occ_u)))
+  say("   ＊ secrad.r:1275 が max(effort_occ) で srv を確保するので、")
+  say("     年のままだと機会数が 2018 になり segfault / 極端な遅さの原因になる")
+  effort_occ <- as.integer(factor(effort_occ))
+}
+say(sprintf("effort_occ: %d 水準（1〜%d）。YEAR の水準数 %d",
+            length(unique(effort_occ)), max(effort_occ), length(unique(effort$YEAR))))
+
 ## **向きと対応の確認。** ここを間違えると個体数が検出器数に化ける
 stopifnot(nrow(detect) == nrow(effort),
           length(effort_loc) == nrow(effort),
-          !anyNA(effort_loc), max(effort_loc) <= ncell,
-          length(effort_occ) == nrow(effort))
+          !anyNA(effort_loc), max(effort_loc) <= ncell, min(effort_loc) >= 1L,
+          length(effort_occ) == nrow(effort),
+          min(effort_occ) >= 1L)
 say(sprintf("努力 %d 行 / 機会 %d（%s〜%s）/ セル %d",
             nrow(effort), length(unique(effort_occ)),
             min(effort$YEAR), max(effort$YEAR), length(unique(effort_loc))))
@@ -148,13 +177,51 @@ if (RATE < 1) {
 }
 nind <- ncol(detect)
 
-## --- メモリの見積もり --------------------------------------------------------
-## secrad.r:1174-1176 が ncell × nind × nobs の配列を2つ持つ
-gb <- 2 * ncell * nind * 8 / 1e9
+## --- ★ 走らせる前の見積もり -------------------------------------------------
+##
+## **これを出さずに流すと、終わらない計算を何日も待つことになる**（2026-09-29 に
+## 別PCで Segmentation fault。そもそも完走しない規模だった）。
+##
+## メモリ: secrad.r:1174-1176 が ncell × nind × nobs の配列を2つ持つ。
+## 時間  : pcap_poisson のループは nmu × nind × neffort
+##         （examples/pcap_bench.R のコメントに構造がある）。
+##         **本家の実装では、さらに ind_cov.minCoeff() の縮約が
+##         最内ループに入るので nind の2乗になる。**
+neffort <- nrow(effort)
+gb  <- 2 * ncell * nind * 8 / 1e9
+gb_ad <- ncell^2 * 8 / 1e9
 say(sprintf("★ 見込みメモリ: ncell %d × nind %d × 8バイト × 2 = **%.1f GB**",
             ncell, nind, gb))
-say(sprintf("   （advdiff の ncell² もこれとは別に %.2f GB）", ncell^2 * 8 / 1e9))
-if (gb > 40) say("   ⚠ 大きい。落ちたら --rate を下げること")
+say(sprintf("   advdiff の ncell² が別に %.2f GB（固有値分解でその数倍）", gb_ad))
+say(sprintf("   pcap の返り値 nmu × nind が別に %.1f GB", ncell * nind * 8 / 1e9))
+
+## results/pcap_bench.csv の実測から外挿
+## 基準: nmu 400 / neffort 25 / nind 19,200 → 現行 83.09秒 / 修正版 7.02秒
+BASE <- 400 * 19200 * 25
+work <- ncell * nind * neffort
+t_fix <- 7.02 * work / BASE                       # 修正版は nmu·nind·neffort に比例
+t_now <- t_fix * (nind / 1627)                    # 現行は さらに nind に比例
+say("")
+say("★ pcap の時間の見積もり（results/pcap_bench.csv からの外挿）")
+say(sprintf("   nmu %d × nind %d × neffort %d = %.3g", ncell, nind, neffort, work))
+say(sprintf("   **現行コード      : %.1f 時間（%.1f 日）**", t_now / 3600, t_now / 86400))
+say(sprintf("   pcap を修正した場合: %.1f 時間", t_fix / 3600))
+say("   ＊ クマは loglf 1回 181秒（nmu 8497 / nind 109 / neffort 227）")
+if (t_now > 6 * 3600) {
+  say("")
+  say("   ⚠⚠ **この規模では完走しない。** 次のいずれかが要る:")
+  say("      (1) --rate を下げる（nind が減る。現行は2乗で効く）")
+  say("      (2) pcap の修正（reports/pcap_fix_decision.md）")
+  say("      (3) **解析範囲を狭める**（ncell・neffort・nind が同時に減る。いちばん効く）")
+  say("          mesh2_convex_kanto.gpkg は 1,013 セル（実測。20260928_band_scale.md §11）")
+  say("          ただし **effort$meshcode は convex7 の行番号**なので、")
+  say("          メッシュを差し替えるなら make_data&plot.R から作り直しが要る")
+  if (!interactive()) {
+    say("")
+    say("   見積もりだけ出して終了する。実行するなら --force を付けること。")
+    if (!("--force" %in% .args)) quit(status = 0)
+  }
+}
 
 # ---------------------------------------------------------------------------
 # 3. 組み立て
