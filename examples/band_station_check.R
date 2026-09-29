@@ -89,8 +89,17 @@ for (p in c(CSV, MESH, PLACE))
 say <- function(...) { cat(..., "\n", sep = ""); flush(stdout()) }
 hr  <- function() say(strrep("-", 74))
 
-## make_data&plot.R:8 と同じ。DBF と shift_jis を正しく読むため
-suppressWarnings(try(Sys.setlocale("LC_ALL", "Japanese_Japan.932"), silent = TRUE))
+## ★★ **`Sys.setlocale("LC_ALL", "Japanese_Japan.932")` を呼んではいけない。**
+##
+## `make_data&plot.R:8` はそれをやっているが、**このファイルは UTF-8 なので
+## 真似すると壊れる**。`Rscript` はファイルを**逐次パースしながら実行**するため、
+## 途中でロケールを CP932 に切り替えると**それ以降の行が Shift-JIS として
+## 解釈され**、日本語コメントのバイト列が壊れてパースエラーになる
+## （2026-09-29 に実際に `予想外の '==' です ... say("====` で落ちた）。
+##
+## そもそもここでは不要。`PLACE.DBF` から使うのは PCODE / LAT / LONG だけで
+## すべて ASCII、CSV は `read_csv` に `locale(encoding = "shift_jis")` を
+## 直接渡しているので、システムのロケールに依存しない。
 suppressMessages({ library(sf); library(dplyr); library(readr); library(foreign) })
 source("functions.R", encoding = "UTF-8")
 if (!exists("convert_to_decimal"))
