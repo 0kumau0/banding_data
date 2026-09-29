@@ -70,8 +70,11 @@ if (length(.bad)) stop("知らない引数: ", paste(.bad, collapse = " "),
 ## 既定値はエスケープで書いておく（ｼｼﾞｭｳｶﾗ）
 SPECIES <- .opt("--species", "ｼｼﾞｭｳｶﾗ")
 SP_COL  <- .opt("--sp-col", "SPNAMK")
-WIDTHS  <- as.numeric(strsplit(.opt("--width", "20,30,50,80,120"), ",")[[1]])
-RESOL   <- as.numeric(strsplit(.opt("--res",   "0.5,1,2,5,10"),   ",")[[1]])
+## 2026-09-29: 最初 120km までで走らせたら**最大の幅で最良**になった。
+## 探索範囲の端で最適になるのは範囲が狭すぎる印。しかも計算に余裕があった
+## （W120/r5 で SGD 300反復が 1.07日）ので、**大きい側へ広げる**。
+WIDTHS  <- as.numeric(strsplit(.opt("--width", "50,80,120,200,300,500,800"), ",")[[1]])
+RESOL   <- as.numeric(strsplit(.opt("--res",   "1,2,5,10,20"),   ",")[[1]])
 STEP    <- as.numeric(.opt("--step", "10"))     # 範囲の中心をずらす刻み（km）
 TOPN    <- as.integer(.opt("--top", "12"))
 OUT     <- .opt("--out", "results/band_region_scan.csv")
@@ -282,6 +285,27 @@ if (!nrow(good)) {
   print(b[, c("W", "res", "cx", "cy", "ncell", "n_eff", "nind", "n_pair", "loglf", "sgd_day")],
         row.names = FALSE)
 }
+
+## ★★ **境界線**: つながり N 本を買うのに最低何日かかるか。
+## 合否より、この曲線のほうが判断に使える
+say("")
+hr(); say("  ★ 境界線 — つながり N 本を買うのに必要な最小の計算時間"); hr()
+say(sprintf("  %8s %10s %8s %7s %8s %9s %12s",
+            "つながり", "最小SGD日数", "幅km", "解像度", "ncell", "nind", "neffort"))
+fr <- do.call(rbind, lapply(sort(unique(res$n_pair)), function(np) {
+  s <- res[res$n_pair >= np, , drop = FALSE]
+  if (!nrow(s)) return(NULL)
+  s[which.min(s$sgd_day), , drop = FALSE]
+}))
+for (i in seq_len(nrow(fr)))
+  say(sprintf("  %8d %10.1f %8.0f %7.1f %8s %9s %12s",
+              fr$n_pair[i], fr$sgd_day[i], fr$W[i], fr$res[i],
+              format(fr$ncell[i], big.mark = ","),
+              format(fr$nind[i], big.mark = ","),
+              format(fr$n_eff[i], big.mark = ",")))
+say("")
+say("  ＊ 「つながり N 本**以上**を満たす構成のうち、最も軽いもの」")
+say("  ＊ 多点出発が3点要るので、実際の所要は上の値 × 3")
 
 say("")
 say("  ★ 比較のための既知の構成")
