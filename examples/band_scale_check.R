@@ -276,10 +276,19 @@ movement_stats <- function(m, eff_cell, xy = NULL) {
   p <- m@p
   if (length(m@i) == 0L) return(list(n_moved = 0L, d_med = NA_real_, d_max = NA_real_))
 
-  ## 非ゼロ要素を (個体, セル) の組にして、組の異なり数を数える
+  ## 格納要素を (個体, セル) の組にして、組の異なり数を数える
   jj <- rep.int(seq_len(ncol(m)), diff(p))      # 個体（列）
   cc <- eff_cell[m@i + 1L]                      # セル（行 → 努力 → セル）
-  ok <- !is.na(cc)
+  ## ★★ **値が 0 の格納要素を必ず落とす**（2026-09-29 に修正）。
+  ##
+  ## 疎行列は「格納されている要素」と「値が 0 でない要素」が一致しない。
+  ## この rds の検出行列には**各種ちょうど1列、全要素が 0 のダミー個体**が
+  ## 入っており、それが全国に散らばる努力行に格納されている。
+  ## 落とさないと **捕獲0回の個体が「800セル以上を移動した」ことになり**、
+  ## 全30種の `move_km_max` が揃って 3020.3 km（北海道〜沖縄）になっていた。
+  ## 実際 `n_moved` は全種でちょうど1件ずつ過大だった
+  ## （アオジ 663→662 / シジュウカラ 18→17 / n_moved=1 だった4種は 0 件）。
+  ok <- !is.na(cc) & m@x > 0
   jj <- jj[ok]; cc <- cc[ok]
   o  <- order(jj, cc)
   jj <- jj[o]; cc <- cc[o]
@@ -309,7 +318,12 @@ movement_stats <- function(m, eff_cell, xy = NULL) {
 one_detect <- function(m, label) {
   if (is.null(m) || !nrow(m) || !ncol(m)) return(NULL)
   cnt    <- csum(m)                      # 個体ごとの検出回数
-  n_ind  <- ncol(m)
+  ## ★ **検出が1回も無い列は個体として数えない**（2026-09-29 に修正）。
+  ## 各種ちょうど1列、全要素が 0 のダミー個体が入っている。
+  ## 以前は n_ind = ncol(m) としていたので、全種で1だけ過大だった
+  ## （n_multi + n_single が n_ind に1足りない、という形で表に現れていた）。
+  n_zero <- sum(cnt == 0)
+  n_ind  <- sum(cnt > 0)
   n_rec  <- sum(cnt)
   n_mult <- sum(cnt >  1)
   n_sing <- sum(cnt == 1)
@@ -317,6 +331,7 @@ one_detect <- function(m, label) {
   mv <- movement_stats(m, EFF_CELL, MESH_XY)
   data.frame(
     group = label, n_record = n_rec, n_ind = n_ind,
+    n_zerocol = n_zero,                 # 検出0回の列（ダミー個体）。各種1のはず
     n_multi = n_mult, n_single = n_sing,
     det_per_ind = n_rec / n_ind, multi_frac = n_mult / n_ind,
     ## ★ 連結性の情報量はここ。複数回捕獲されても同じセルなら移動は観測されない

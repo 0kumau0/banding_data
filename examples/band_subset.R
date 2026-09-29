@@ -200,9 +200,15 @@ cnt_all <- Matrix::colSums(detect)          # 全国での検出回数
 cnt_sub <- Matrix::colSums(detect_sub)      # 部分メッシュ内での検出回数
 keep_ind <- which(cnt_sub > 0)              # 部分メッシュ内で1回以上捕まった個体
 
-say("  個体 ", format(ncol(detect), big.mark = ","), " → **",
+## ★ 検出0回の列（各種1つ入っているダミー個体）は個体として数えない
+n_ind_all <- sum(cnt_all > 0)
+if (ncol(detect) != n_ind_all)
+  say("  ＊ 検出0回の列が ", ncol(detect) - n_ind_all,
+      " 列ある（ダミー個体）。個体数からは除く")
+
+say("  個体 ", format(n_ind_all, big.mark = ","), " → **",
     format(length(keep_ind), big.mark = ","), "**（",
-    sprintf("%.1f%%", 100 * length(keep_ind) / ncol(detect)), "）")
+    sprintf("%.1f%%", 100 * length(keep_ind) / n_ind_all), "）")
 say("  検出 ", format(sum(cnt_all), big.mark = ","), " → **",
     format(sum(cnt_sub), big.mark = ","), "**")
 
@@ -234,9 +240,17 @@ stopifnot(!anyNA(cell_new), max(cell_new) <= length(keep_cell))
 ## **再捕獲回数ではなく、これが連結性の情報量**
 ## （ヤマガラは再捕獲率が最高でも、ほぼ同じセル内なので移動が見えない）
 count_moved <- function(m, cell_of_row) {
+  if (!inherits(m, "dgCMatrix")) m <- methods::as(m, "dgCMatrix")
   p  <- m@p
-  jj <- rep.int(seq_len(ncol(m)), diff(p))     # 非ゼロ要素の列（＝個体）
-  cc <- cell_of_row[m@i + 1L]                  # 非ゼロ要素のセル
+  jj <- rep.int(seq_len(ncol(m)), diff(p))     # 格納要素の列（＝個体）
+  cc <- cell_of_row[m@i + 1L]                  # 格納要素のセル
+  ## ★★ **値が 0 の格納要素を落とす**（2026-09-29 に修正）。
+  ## 各種ちょうど1列、全要素が 0 のダミー個体が入っており、
+  ## 落とさないと「捕獲0回の個体が800セル以上を移動した」ことになる。
+  ## 全30種の move_km_max が揃って 3020.3 km になっていた原因。
+  ## examples/band_moves.R が実証、examples/band_scale_check.R も同時に修正
+  keep <- m@x > 0
+  jj <- jj[keep]; cc <- cc[keep]
   o  <- order(jj, cc); jj <- jj[o]; cc <- cc[o]
   n  <- length(jj)
   if (!n) return(integer(0))
@@ -254,7 +268,7 @@ n_moved_all <- {
 say("  2セル以上で捕まった個体（＝移動が観測された個体）")
 say("    全国    : ", format(n_moved_all, big.mark = ","))
 say("    部分    : **", format(n_moved, big.mark = ","), "**")
-say("  1個体あたり検出: 全国 ", sprintf("%.3f", sum(cnt_all) / ncol(detect)),
+say("  1個体あたり検出: 全国 ", sprintf("%.3f", sum(cnt_all) / n_ind_all),
     " → 部分 **", sprintf("%.3f", sum(cnt) / length(cnt)), "**")
 
 ## --- 検算 -------------------------------------------------------------------
@@ -270,7 +284,7 @@ if (file.exists(SCALE_CSV)) {
       量 = c("n_ind", "n_multi", "n_single", "n_record", "n_moved"),
       band_scale_check = c(row$n_ind, row$n_multi, row$n_single,
                            row$n_record, row$n_moved),
-      今回 = c(ncol(detect), sum(cnt_all > 1), sum(cnt_all == 1),
+      今回 = c(n_ind_all, sum(cnt_all > 1), sum(cnt_all == 1),
                sum(cnt_all), n_moved_all))
     chk$一致 <- ifelse(chk$band_scale_check == chk$今回, "✓", "★ずれ")
     say("")
@@ -321,7 +335,7 @@ LL_PER_ITER <- 5.2; N_ITER <- 300
 
 scen <- rbind(
   data.frame(範囲 = "全国", nmu = nrow(mesh_all), neffort = nrow(effort),
-             nind = ncol(detect)),
+             nind = n_ind_all),
   data.frame(範囲 = "部分", nmu = length(keep_cell), neffort = length(keep_eff),
              nind = length(keep_ind)))
 scen$loglf_現行 <- sapply(seq_len(nrow(scen)), function(i)
@@ -362,10 +376,10 @@ out <- data.frame(
   ncell_eff_all = length(unique(eff_cell)),
   ncell_eff_sub = length(unique(eff_cell[keep_eff])),
   nocc_all    = occ_all,              nocc_sub    = occ_sub,
-  nind_all    = ncol(detect),         nind_sub    = length(keep_ind),
+  nind_all    = n_ind_all,         nind_sub    = length(keep_ind),
   ndet_all    = sum(cnt_all),         ndet_sub    = sum(cnt),
   nmulti_sub  = n_multi,              nsingle_sub = n_single,
-  det_per_ind_all = sum(cnt_all) / ncol(detect),
+  det_per_ind_all = sum(cnt_all) / n_ind_all,
   det_per_ind_sub = sum(cnt) / length(cnt),
   nmoved_all  = n_moved_all,          nmoved_sub  = n_moved,
   ncross      = n_cross,              lost_cap    = lost_cap,
