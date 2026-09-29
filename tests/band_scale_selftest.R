@@ -36,18 +36,35 @@ effort <- data.frame(
   stringsAsFactors = FALSE)
 
 ## 1種ぶんの検出行列。**行 = 検出努力 / 列 = 個体**（secrad.r の向き）。
-## 個体ごとの検出回数を指定の割合で偏らせる。
-make_detect <- function(n_ind, p_multi) {
+##
+## `p_same` は**再捕獲が同じメッシュで起きる確率**。
+## 2026-09-29: ヤマガラは再捕獲率が最高なのに、**再捕獲のほぼ全てが
+## 同じメッシュ内**で移動が観測できない、とユーザから指摘があった。
+## **再捕獲の回数と、移動の観測数は別物。** ここでも作り分けて確認する。
+## **同じ努力行での再捕獲は潰さない。** 検出行列は計数（ポアソン）なので、
+## 同じ場所で3回捕まれば要素の値が 3 になる。
+## unique() で潰すと「複数回捕獲」として数えられなくなり、
+## **確かめたい対比（再捕獲は多いが移動は無い）が作れない**（最初これで失敗した）。
+make_detect <- function(n_ind, p_multi, p_same) {
   n_cap <- 1L + rbinom(n_ind, 3L, p_multi)        # 1回 〜 4回
-  j <- rep(seq_len(n_ind), n_cap)
-  i <- unlist(lapply(n_cap, function(k) sample.int(N_EFFORT, k)))
-  Matrix::sparseMatrix(i = i, j = j, x = 1,
-                       dims = c(N_EFFORT, n_ind))
+  ii <- integer(0); jj <- integer(0)
+  for (k in seq_len(n_ind)) {
+    home <- sample.int(N_EFFORT, 1L)              # 最初に捕まった努力
+    rows <- home
+    if (n_cap[k] > 1L) for (r in 2:n_cap[k])
+      rows <- c(rows, if (runif(1) < p_same) home else sample.int(N_EFFORT, 1L))
+    ii <- c(ii, rows); jj <- c(jj, rep(k, length(rows)))
+  }
+  ## 重複する (i, j) は合算される → 同じ場所での再捕獲が計数になる
+  Matrix::sparseMatrix(i = ii, j = jj, x = 1, dims = c(N_EFFORT, n_ind))
 }
 
-detect_list <- setNames(list(make_detect(400L, 0.10),
-                             make_detect(250L, 0.05),
-                             make_detect(120L, 0.30)), SPP)
+## アオジ = よく再捕獲されるが**ほぼ同じ場所**（ヤマガラ型）
+## オオジュリン = 再捕獲は少ないが**移動する**
+## メジロ = 再捕獲も移動も多い
+detect_list <- setNames(list(make_detect(400L, 0.30, p_same = 0.95),
+                             make_detect(250L, 0.05, p_same = 0.10),
+                             make_detect(120L, 0.30, p_same = 0.10)), SPP)
 
 obj <- list(splist      = c(SPP, sprintf("種%03d", 1:233)),   # 236種の名前
             effort      = effort,
@@ -65,12 +82,22 @@ cat("    - effort が『検出努力の表』として認識され、行数 ", N
 cat("    - detect_list の3件が検出行列として拾われ、**行数が effort と一致**すると報告される\n")
 cat("    - 個体数は**列数**（400 / 250 / 120）。行数（", N_EFFORT, "）ではない\n", sep = "")
 cat("\n  期待する数値:\n")
+## 1努力 = 1メッシュとは限らないので、努力 → meshcode で数える
+eff_cell <- as.integer(effort$meshcode)
 for (sp in SPP) {
   m <- detect_list[[sp]]
   cnt <- Matrix::colSums(m)
-  cat(sprintf("    %-12s 記録 %4d / 個体 %3d / 複数回 %3d / 単回 %3d / 1個体あたり %.3f\n",
-              sp, sum(cnt), ncol(m), sum(cnt > 1), sum(cnt == 1), sum(cnt) / ncol(m)))
+  ## 2セル以上で捕まった個体を数える（スクリプト側と同じ定義）
+  p <- m@p
+  jj <- rep.int(seq_len(ncol(m)), diff(p)); cc <- eff_cell[m@i + 1L]
+  o <- order(jj, cc); jj <- jj[o]; cc <- cc[o]; n <- length(jj)
+  newp <- c(TRUE, (jj[-1] != jj[-n]) | (cc[-1] != cc[-n]))
+  n_moved <- sum(tabulate(jj[newp], nbins = ncol(m)) >= 2L)
+  cat(sprintf("    %-12s 個体 %3d / 複数回 %3d / 1個体あたり %.3f / **移動 %3d**\n",
+              sp, ncol(m), sum(cnt > 1), sum(cnt) / ncol(m), n_moved))
 }
+cat("\n  ＊ アオジは再捕獲が多いのに移動がほとんど無い（同じメッシュばかり）。\n")
+cat("    **det_per_ind の順位と n_moved の順位が食い違うことを確認する。**\n")
 tot_rec <- sum(sapply(detect_list, function(m) sum(Matrix::colSums(m))))
 tot_ind <- sum(sapply(detect_list, ncol))
 cat(sprintf("    %-12s 記録 %4d / 個体 %3d /                       1個体あたり %.3f\n",

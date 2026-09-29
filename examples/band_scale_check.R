@@ -167,6 +167,31 @@ if (!is.null(eff)) {
   if (!is.null(yr))   cat(sprintf("  年の範囲: %s 〜 %s\n", yr[1], yr[2]))
 }
 
+## --- 努力行 → セル、およびセルの中心座標 ------------------------------------
+## **effort$meshcode は mesh の行番号**（reports/20260928_band_scale.md §4）。
+## これが「どの努力がどのセルか」で、移動の判定に要る。
+EFF_CELL <- NULL
+if (!is.null(eff) && !is.na(mc))
+  EFF_CELL <- suppressWarnings(as.integer(as.character(eff$obj[[mc]])))
+if (!is.null(EFF_CELL) && anyNA(EFF_CELL)) {
+  cat("  ⚠ meshcode が整数にならない行がある。移動の集計はできない\n")
+  EFF_CELL <- NULL
+}
+
+## メッシュの中心座標（km）。--mesh を渡したときだけ。移動距離の算出に使う。
+MESH_XY <- NULL; meshsf <- NULL
+if (nzchar(MESHFILE) && file.exists(MESHFILE) && requireNamespace("sf", quietly = TRUE)) {
+  meshsf <- sf::st_read(MESHFILE, quiet = TRUE)
+  xy <- sf::st_coordinates(sf::st_centroid(sf::st_geometry(meshsf)))
+  MESH_XY <- xy[, 1:2, drop = FALSE] / 1000      # m → km
+  cat(sprintf("  メッシュ %s: %d セル（移動距離の算出に使う）\n",
+              basename(MESHFILE), nrow(MESH_XY)))
+  if (!is.null(EFF_CELL) && max(EFF_CELL) > nrow(MESH_XY)) {
+    cat("  ⚠ **行番号がメッシュの行数を超えている。世代が違う。**移動距離は出さない\n")
+    MESH_XY <- NULL
+  }
+}
+
 ## --- 集計の対象を決める ------------------------------------------------------
 ## 行列があれば ADCR 形式（集計済み）。無ければ捕獲記録の表を探す。
 MODE <- if (length(mats)) "detect" else "records"
@@ -232,6 +257,55 @@ one <- function(x, label) {
 ## 向きを間違えると個体数が検出器数に化けるので、effort の行数と突き合わせて確かめる。
 rsum <- function(m) if (inherits(m, "Matrix")) Matrix::rowSums(m) else rowSums(m)
 
+## --- ★ 移動が観測された個体の数（2026-09-29 追加）--------------------------
+##
+## **再捕獲の回数は、連結性の情報量の代理にならない。**
+## 同じメッシュで何度捕まっても、移動は1つも観測されない。
+## ADCR が連結性を推定するのに使うのは**セル間の移動**。
+##
+## ヤマガラは1個体あたり検出数が30種で最高（1.34）だが、
+## **複数回捕獲のほぼ全てが同じメッシュ内**だとユーザから指摘（2026-09-29）。
+## それなら移動の情報はほぼゼロで、**連結性は推定できない。**
+##
+## ここでは「**2つ以上の異なるメッシュで捕獲された個体**」を数える。
+## 検出行列の列ごとに、検出のあった努力行 → そのセル、の異なり数を見る。
+movement_stats <- function(m, eff_cell, xy = NULL) {
+  if (is.null(eff_cell)) return(list(n_moved = NA_integer_, d_med = NA_real_,
+                                     d_max = NA_real_))
+  if (!inherits(m, "dgCMatrix")) m <- methods::as(m, "dgCMatrix")
+  p <- m@p
+  if (length(m@i) == 0L) return(list(n_moved = 0L, d_med = NA_real_, d_max = NA_real_))
+
+  ## 非ゼロ要素を (個体, セル) の組にして、組の異なり数を数える
+  jj <- rep.int(seq_len(ncol(m)), diff(p))      # 個体（列）
+  cc <- eff_cell[m@i + 1L]                      # セル（行 → 努力 → セル）
+  ok <- !is.na(cc)
+  jj <- jj[ok]; cc <- cc[ok]
+  o  <- order(jj, cc)
+  jj <- jj[o]; cc <- cc[o]
+  n  <- length(jj)
+  newpair <- if (n <= 1L) TRUE else
+    c(TRUE, (jj[-1] != jj[-n]) | (cc[-1] != cc[-n]))
+  n_cells <- tabulate(jj[newpair], nbins = ncol(m))
+  moved <- which(n_cells >= 2L)
+
+  ## 移動した個体ごとの「最も離れた2セル間の距離」
+  d_med <- d_max <- NA_real_
+  if (length(moved) && !is.null(xy)) {
+    uj <- jj[newpair]; uc <- cc[newpair]
+    sel <- uj %in% moved
+    uj <- uj[sel]; uc <- uc[sel]
+    sp <- split(uc, uj)
+    dd <- vapply(sp, function(cells) {
+      if (length(cells) < 2L) return(0)
+      pts <- xy[cells, , drop = FALSE]
+      max(stats::dist(pts))
+    }, numeric(1))
+    d_med <- stats::median(dd); d_max <- max(dd)
+  }
+  list(n_moved = length(moved), d_med = d_med, d_max = d_max)
+}
+
 one_detect <- function(m, label) {
   if (is.null(m) || !nrow(m) || !ncol(m)) return(NULL)
   cnt    <- csum(m)                      # 個体ごとの検出回数
@@ -240,10 +314,15 @@ one_detect <- function(m, label) {
   n_mult <- sum(cnt >  1)
   n_sing <- sum(cnt == 1)
   eff_ <- function(r) n_mult + r * n_sing
+  mv <- movement_stats(m, EFF_CELL, MESH_XY)
   data.frame(
     group = label, n_record = n_rec, n_ind = n_ind,
     n_multi = n_mult, n_single = n_sing,
     det_per_ind = n_rec / n_ind, multi_frac = n_mult / n_ind,
+    ## ★ 連結性の情報量はここ。複数回捕獲されても同じセルなら移動は観測されない
+    n_moved = mv$n_moved,                     # 2セル以上で捕獲された個体
+    moved_frac = mv$n_moved / max(1L, n_mult), # 複数回個体のうち移動した割合
+    move_km_med = mv$d_med, move_km_max = mv$d_max,
     max_cap = max(cnt),
     n_place = sum(rsum(m) > 0),          # 検出があった努力の数
     eff_nind_r10 = eff_(0.10), speedup_r10 = (n_ind / eff_(0.10))^1.78,
@@ -286,9 +365,25 @@ tab <- tab[order(-tab$n_ind), ]
 cat("\n-- まとまりごとの規模（個体数の多い順）--\n")
 show <- tab[tab$n_ind >= MIN_IND, ]
 if (nrow(show)) {
-  print(format(show[, c("group", "n_record", "n_ind", "n_multi", "n_single",
-                        "det_per_ind", "max_cap", "n_place")],
-               digits = 3), row.names = FALSE)
+  cols <- c("group", "n_record", "n_ind", "n_multi", "det_per_ind",
+            "n_moved", "moved_frac")
+  if (any(is.finite(tab$move_km_med))) cols <- c(cols, "move_km_med", "move_km_max")
+  cols <- c(cols, "max_cap", "n_place")
+  print(format(show[, cols], digits = 3), row.names = FALSE)
+  cat("   n_moved   = **2つ以上の異なるメッシュで捕獲された個体**（移動が観測された）\n")
+  cat("   moved_frac = n_moved / n_multi（複数回捕獲のうち移動した割合）\n")
+  cat("   **連結性の情報を運ぶのは n_moved であって n_multi ではない。**\n")
+}
+
+## --- ★ 連結性の情報量で並べ直す ---------------------------------------------
+if (any(is.finite(tab$n_moved))) {
+  cat("\n-- ★ 移動が観測された個体数の多い順（連結性の情報量）--\n")
+  mv <- tab[order(-tab$n_moved), ]
+  cols <- c("group", "n_ind", "n_multi", "n_moved", "moved_frac", "det_per_ind")
+  if (any(is.finite(tab$move_km_med))) cols <- c(cols, "move_km_med", "move_km_max")
+  print(format(utils::head(mv, 12), digits = 3)[, cols], row.names = FALSE)
+  cat("\n   ＊ 1個体あたり検出数（det_per_ind）の順位と一致しないことに注意。\n")
+  cat("     **同じメッシュで何度捕まっても移動は観測されない。**\n")
 }
 small <- tab[tab$n_ind < MIN_IND, ]
 if (nrow(small))
