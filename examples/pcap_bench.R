@@ -45,9 +45,14 @@
 #   orig … 現行そのまま
 #   fix1 … (1) だけ直す（minCoeff をループ外に）
 #   fix2 … (1) + (2)（内側 k をローカルに足し込み、最後に1回だけ書く）
+#
+# **C++ の本体は examples/pcap_kernels.cpp にある**（2026-09-29 に切り出した）。
+# examples/pcap_threads.R が同じカーネルを使う。片方だけ直して食い違うと、
+# 2つの測定が比較できなくなるため。
 # ---------------------------------------------------------------------------
 
 OUT_CSV <- "results/pcap_bench.csv"
+KERNELS <- "examples/pcap_kernels.cpp"
 
 .args <- commandArgs(trailingOnly = TRUE)
 .opt <- function(flag, default = NULL) {
@@ -64,118 +69,13 @@ NEFFORT  <- as.integer(.opt("--neffort", "25"))
 NREP     <- as.integer(.opt("--rep", "3"))
 
 suppressMessages({ library(Rcpp); library(RcppEigen) })
-
-code <- '
-#include <RcppEigen.h>
-#include <omp.h>
-
-// [[Rcpp::depends(RcppEigen)]]
-// [[Rcpp::plugins(openmp)]]
-// [[Rcpp::plugins("cpp11")]]
-using namespace Rcpp;
-using namespace Eigen;
-
-// secrad.r:206-221 と同一
-inline double dpoisson_c(const int k, const double loglambda, const bool logprob=true){
-    double res;
-    if((k==0)&(exp(loglambda)==0)){
-        res = 0;
-    }else if((k!=0)&(exp(loglambda)==0)){
-        res = R_NegInf;
-    }else{
-        res = loglambda*k-exp(loglambda)-lgamma(k+1);
-    }
-    if(logprob==false){ res = exp(res); }
-    return(res);
-}
-
-// --- 現行（secrad.r:300-326 の写し）----------------------------------------
-// [[Rcpp::export]]
-MatrixXd pcap_orig(const MatrixXi detect, const VectorXi effort_occ,
-                   const MatrixXd loglambda_mat, const MatrixXi srv,
-                   const VectorXi ind_cov, const bool logprob=true){
-    int i,j,k,colnum;
-    double temp;
-    int nmu=loglambda_mat.rows();
-    int neffort=effort_occ.size();
-    int nind=ind_cov.size();
-    MatrixXd res= MatrixXd::Zero(nmu,nind);
-    Eigen::setNbThreads(1);
-    #pragma omp parallel for private(i,j,k,colnum,temp)
-    for(i=0;i<nmu;i++){
-        for(j=0;j<nind;j++){
-            for(k=0;k<neffort;k++){
-                colnum = k+neffort*(ind_cov(j)-ind_cov.minCoeff());
-                temp = dpoisson_c(detect(k,j),loglambda_mat(i,colnum)+log(srv(j,effort_occ(k)-1)),logprob);
-                #pragma omp atomic
-                res(i,j) += temp;
-            }
-        }
-    }
-    Eigen::setNbThreads(0);
-    return(res);
-}
-
-// --- fix1: minCoeff をループの外へ -----------------------------------------
-// [[Rcpp::export]]
-MatrixXd pcap_fix1(const MatrixXi detect, const VectorXi effort_occ,
-                   const MatrixXd loglambda_mat, const MatrixXi srv,
-                   const VectorXi ind_cov, const bool logprob=true){
-    int i,j,k,colnum;
-    double temp;
-    int nmu=loglambda_mat.rows();
-    int neffort=effort_occ.size();
-    int nind=ind_cov.size();
-    const int cov_min = ind_cov.minCoeff();          // ← ループ不変なので外へ
-    MatrixXd res= MatrixXd::Zero(nmu,nind);
-    Eigen::setNbThreads(1);
-    #pragma omp parallel for private(i,j,k,colnum,temp)
-    for(i=0;i<nmu;i++){
-        for(j=0;j<nind;j++){
-            for(k=0;k<neffort;k++){
-                colnum = k+neffort*(ind_cov(j)-cov_min);
-                temp = dpoisson_c(detect(k,j),loglambda_mat(i,colnum)+log(srv(j,effort_occ(k)-1)),logprob);
-                #pragma omp atomic
-                res(i,j) += temp;
-            }
-        }
-    }
-    Eigen::setNbThreads(0);
-    return(res);
-}
-
-// --- fix2: fix1 + atomic を外し、ローカルに足し込んで1回だけ書く -----------
-// [[Rcpp::export]]
-MatrixXd pcap_fix2(const MatrixXi detect, const VectorXi effort_occ,
-                   const MatrixXd loglambda_mat, const MatrixXi srv,
-                   const VectorXi ind_cov, const bool logprob=true){
-    int nmu=loglambda_mat.rows();
-    int neffort=effort_occ.size();
-    int nind=ind_cov.size();
-    const int cov_min = ind_cov.minCoeff();
-    MatrixXd res= MatrixXd::Zero(nmu,nind);
-    Eigen::setNbThreads(1);
-    #pragma omp parallel for
-    for(int i=0;i<nmu;i++){
-        for(int j=0;j<nind;j++){
-            double acc = 0.0;                        // ← スレッド固有。競合しない
-            const int base = neffort*(ind_cov(j)-cov_min);
-            for(int k=0;k<neffort;k++){
-                acc += dpoisson_c(detect(k,j),
-                                  loglambda_mat(i,base+k)+log(srv(j,effort_occ(k)-1)),
-                                  logprob);
-            }
-            res(i,j) = acc;                          // ← 書き込みは1回だけ
-        }
-    }
-    Eigen::setNbThreads(0);
-    return(res);
-}
-'
+if (!file.exists(KERNELS))
+  stop(KERNELS, " が見つかりません。リポジトリルートで実行してください: ", getwd())
 
 cat("== C++ のコンパイル ==\n")
-sourceCpp(code = code, rebuild = TRUE)
-cat("  OpenMP スレッド数: ", Sys.getenv("OMP_NUM_THREADS", "(既定)"), "\n", sep = "")
+sourceCpp(KERNELS, rebuild = TRUE)
+cat("  OpenMP スレッド数: ", pcap_threads_used(),
+    "（論理コア ", pcap_procs(), "）\n", sep = "")
 
 mk_input <- function(nind) {
   set.seed(20260914)
