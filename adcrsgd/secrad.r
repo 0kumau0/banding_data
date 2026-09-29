@@ -279,13 +279,14 @@ MatrixXd pcap_bin(const MatrixXi detect,
 	int nmu=lp_mat.rows();
 	int neffort=effort_occ.size();
 	int nind=ind_cov.size();
+	const int cov_min = ind_cov.minCoeff();   // 本家は最内ループ内で毎回評価。ループ不変なので外へ（2026-09-29）
 	MatrixXd res = MatrixXd::Zero(nmu,nind);
 	Eigen::setNbThreads(1);
 	#pragma omp parallel for private(i,j,k,colnum,temp)
 	for(i=0;i<nmu;i++){
 		for(j=0;j<nind;j++){
 			for(k=0;k<neffort;k++){
-				colnum = k+neffort*(ind_cov(j)-ind_cov.minCoeff());
+				colnum = k+neffort*(ind_cov(j)-cov_min);
 				temp = dbin_c(detect(k,j),effort(k),lp_mat(i,colnum)+log(srv(j,effort_occ(k)-1)),logprob);
 				#pragma omp atomic
 				res(i,j) += temp;
@@ -308,13 +309,14 @@ MatrixXd pcap_poisson(const MatrixXi detect,
 	int nmu=loglambda_mat.rows();
 	int neffort=effort_occ.size();
 	int nind=ind_cov.size();
+	const int cov_min = ind_cov.minCoeff();   // 本家は最内ループ内で毎回評価。ループ不変なので外へ（2026-09-29）
 	MatrixXd res= MatrixXd::Zero(nmu,nind);
 	Eigen::setNbThreads(1);
 	#pragma omp parallel for private(i,j,k,colnum,temp)
 	for(i=0;i<nmu;i++){
 		for(j=0;j<nind;j++){
 			for(k=0;k<neffort;k++){
-				colnum = k+neffort*(ind_cov(j)-ind_cov.minCoeff());
+				colnum = k+neffort*(ind_cov(j)-cov_min);
 				temp = dpoisson_c(detect(k,j),loglambda_mat(i,colnum)+log(srv(j,effort_occ(k)-1)),logprob);
 				#pragma omp atomic
 				res(i,j) += temp;
@@ -337,13 +339,14 @@ MatrixXd pcap_poisson_debug(const MatrixXi detect,
 	int nmu=loglambda_mat.rows();
 	int neffort=effort_occ.size();
 	int nind=ind_cov.size();
+	const int cov_min = ind_cov.minCoeff();   // 本家は最内ループ内で毎回評価。ループ不変なので外へ（2026-09-29）
 	MatrixXd res= MatrixXd::Zero(nmu,nind*neffort);
 	Eigen::setNbThreads(1);
 	#pragma omp parallel for private(i,j,k,colnum,rescol,temp)
 	for(i=0;i<nmu;i++){
 		for(j=0;j<nind;j++){
 			for(k=0;k<neffort;k++){
-				colnum = k+neffort*(ind_cov(j)-ind_cov.minCoeff());
+				colnum = k+neffort*(ind_cov(j)-cov_min);
 				rescol = k+neffort*j;
 				temp = dpoisson_c(detect(k,j),loglambda_mat(i,colnum)+log(srv(j,effort_occ(k)-1)),logprob);
 				#pragma omp critical
