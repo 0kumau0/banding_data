@@ -177,6 +177,12 @@ say(sprintf("  メッシュ %s セル", format(nrow(mesh), big.mark = ",")))
 st_in <- st_join(st_pts, mesh %>% dplyr::select(meshcode2), join = st_within, left = FALSE)
 st_map <- st_in %>% st_drop_geometry() %>% dplyr::select(PCODE, meshcode = meshcode2)
 
+## ★ 投影座標（EPSG:3100、単位メートル）を残す。**消えている移動の距離**を出すため。
+## これが分からないと「どこまでメッシュを細かくすればよいか」が決まらない
+st_xy <- st_coordinates(st_in)
+ST_X <- setNames(st_xy[, 1], st_in$PCODE)
+ST_Y <- setNames(st_xy[, 2], st_in$PCODE)
+
 say(sprintf("  座標のある %s 地点のうち、**メッシュ内に入るのは %s 地点**",
             format(nrow(st_pts), big.mark = ","), format(nrow(st_map), big.mark = ",")))
 say(sprintf("  → メッシュ外で落ちる地点: %s", format(nrow(st_pts) - nrow(st_map), big.mark = ",")))
@@ -271,11 +277,35 @@ for (sp in sp_list) {
   say(sprintf("    **差（同じセル内の別ステーション）: 移動 %+d 個体 / つながり %+d 本**",
               moved_station - moved_mesh, pair_st - pair_mesh))
 
+  ## ★ **消えている移動の距離**。同じセル内で別ステーションに移った個体について、
+  ## その2地点が実際に何 km 離れていたか。**必要なメッシュ解像度を決める数字**
+  u <- unique(data.frame(id = x$.ring, st = x$PCODE, ms = x$meshcode,
+                         stringsAsFactors = FALSE))
+  s <- split(u, u$id)
+  s <- s[vapply(s, function(z) nrow(z) >= 2 && length(unique(z$ms)) == 1L, logical(1))]
+  hid_km <- if (!length(s)) numeric(0) else
+    unlist(lapply(s, function(z) {
+      cb <- utils::combn(z$st, 2)
+      sqrt((ST_X[cb[1, ]] - ST_X[cb[2, ]])^2 + (ST_Y[cb[1, ]] - ST_Y[cb[2, ]])^2) / 1000
+    }), use.names = FALSE)
+  hid_km <- hid_km[is.finite(hid_km)]
+  if (length(hid_km)) {
+    q <- stats::quantile(hid_km, c(0.5, 0.9), names = FALSE)
+    say(sprintf("    消えている移動の距離: 中央 %.2f km / 9割点 %.2f km / 最大 %.2f km",
+                q[1], q[2], max(hid_km)))
+    say(sprintf("      1km超 %d / 2km超 %d / 5km超 %d 件（全 %d 件）",
+                sum(hid_km > 1), sum(hid_km > 2), sum(hid_km > 5), length(hid_km)))
+  }
+
   rows[[length(rows) + 1L]] <- data.frame(
     species = sp, n_record = nrow(x), n_ind = length(unique(x$.ring)),
     moved_mesh = moved_mesh, pair_mesh = pair_mesh,
     moved_station = moved_station, pair_station = pair_st,
-    hidden_ind = moved_station - moved_mesh, hidden_pair = pair_st - pair_mesh)
+    hidden_ind = moved_station - moved_mesh, hidden_pair = pair_st - pair_mesh,
+    hidden_km_med = if (length(hid_km)) stats::median(hid_km) else NA_real_,
+    hidden_km_max = if (length(hid_km)) max(hid_km) else NA_real_,
+    hidden_over1km = sum(hid_km > 1), hidden_over2km = sum(hid_km > 2),
+    hidden_over5km = sum(hid_km > 5))
 }
 
 res <- do.call(rbind, rows)
@@ -293,6 +323,9 @@ say("    合成データでの実験（examples/identify_conn.R）:")
 say("      つながり 〜5本   … SE が真値の3〜4倍。符号一致 0.50（推定不能）")
 say("      つながり 11〜20本 … SE が真値の1/3（実用域）")
 say("    **hidden_pair が大きければ、メッシュを細かくする価値がある。**")
+say("")
+say("    hidden_km_* … **消えている移動の距離**。必要なメッシュ解像度を決める。")
+say("                  1km超が多ければ 1km メッシュで拾えるが、ncell は100倍になる")
 say("")
 say("  ＊ moved_mesh は examples/band_moves.R の n_moved と一致するはず（検算）")
 
