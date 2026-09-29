@@ -81,10 +81,18 @@ attempt("library(Rcpp)",   step("   Rcpp ", as.character(packageVersion("Rcpp"))
 attempt("library(RcppEigen)", step("   RcppEigen ", as.character(packageVersion("RcppEigen"))))
 
 # --- 3. config.R -------------------------------------------------------------
-attempt("source(config.R)", {
-  if (!file.exists("config.R"))
-    stop("config.R が無い。リポジトリルートで実行すること: ", getwd())
-  source("config.R", encoding = "UTF-8")
+## `config.R` は **.gitignore 済み**（マシンごとにパスが違う）。
+## **git pull では届かない。** 新しいマシンでは作る必要がある。
+CFG <- .opt("--config", "config.R")
+attempt(paste0("source(", CFG, ")"), {
+  if (!file.exists(CFG)) {
+    stop(CFG, " が無い（作業ディレクトリ: ", getwd(), "）。\n",
+         "       config.R は .gitignore 済みなので git pull では届かない。\n",
+         "       次を実行して、環境に合わせて中を直すこと:\n",
+         "           cp config_example.R config.R\n",
+         "       検査だけなら雛形をそのまま使える: --config config_example.R")
+  }
+  source(CFG, encoding = "UTF-8")
   for (v in c("BAND_MESH", "BAND_RDS")) {
     p <- if (exists(v)) get(v) else "(未定義)"
     step("   ", v, " = ", p,
