@@ -56,27 +56,40 @@ RDS  <- .opt("--rds",  BAND_RDS)
 for (p in c(MESH, RDS)) if (!file.exists(p)) stop("見つかりません: ", p)
 
 t0 <- Sys.time()
-say <- function(...) cat(sprintf("[%s] ", format(Sys.time(), "%H:%M:%S")), ..., "\n", sep = "")
+## **必ず flush する。** segfault は R のエラーと違って後始末をしないので、
+## バッファに残った出力は捨てられる。つまり **「どこまで進んだか」の手掛かりが
+## 消える**（2026-09-29、これで落ちた場所が分からなかった）。
+## リダイレクトするとブロックバッファになるので、なおさら効く。
+say <- function(...) {
+  cat(sprintf("[%s] ", format(Sys.time(), "%H:%M:%S")), ..., "\n", sep = "")
+  flush(stdout()); if (interactive()) utils::flush.console()
+}
 
 say("== 足環データの loglf 計測 ==")
 say("  種: ", SPECIES, " / sampling_rate: ", RATE, " / 繰り返し: ", REPS)
 say("  メッシュ: ", MESH)
 say("  データ  : ", RDS)
 
+## 尤度エンジン（`adcrsgd/secrad.r`）の読み込みは **§3 まで遅らせている**。
+## C++ のコンパイルに30秒かかるうえ、データの検査には要らない。
+## 先に読むと、落ちたときに「C++ で落ちたのかデータで落ちたのか」が
+## 切り分けられなくなる（2026-09-29 の segfault がまさにこれ）。
 suppressMessages({ library(sf); library(Matrix) })
-say("尤度エンジンを読み込み中（C++ のコンパイルで30秒ほど）...")
-suppressMessages(suppressWarnings(source("adcrsgd/secrad.r", encoding = "UTF-8")))
-source("adcrsgd/sgd_utils.R", encoding = "UTF-8")
 
 # ---------------------------------------------------------------------------
 # 1. メッシュ
 # ---------------------------------------------------------------------------
+say("§1 メッシュを読み込み中: ", MESH)
 mesh <- st_read(MESH, quiet = TRUE)
+say(sprintf("  読み込み完了: %d 行 %d 列", nrow(mesh), ncol(mesh)))
 ncell <- nrow(mesh)
+say("  重心を計算中（GEOS）...")
 xy <- st_coordinates(st_centroid(st_geometry(mesh)))[, 1:2, drop = FALSE] / 1000  # km
 coords <- cbind(x = xy[, 1], y = xy[, 2])
+if (anyNA(coords)) stop("重心に NA があります: ", sum(!complete.cases(coords)), " セル")
 
 ## **10km 四方の正則格子であることを確かめてから直に書く**（距離行列は作らない）
+say("  面積を計算中...")
 ar_km2 <- as.numeric(st_area(mesh)) / 1e6
 say(sprintf("メッシュ: %d セル / 1セルの面積 中央 %.1f km²（最小 %.1f 最大 %.1f）",
             ncell, median(ar_km2), min(ar_km2), max(ar_km2)))
@@ -106,7 +119,10 @@ stopifnot(nrow(grid_cov) == ncell,
 # ---------------------------------------------------------------------------
 # 2. 努力と検出
 # ---------------------------------------------------------------------------
+say(sprintf("§2 データを読み込み中: %s（%.2f GB）",
+            RDS, file.size(RDS) / 1e9))
 d <- readRDS(RDS)
+say("  読み込み完了。要素: ", paste(names(d), collapse = ", "))
 effort <- as.data.frame(d$effort)
 i_sp <- which(d$splist == SPECIES)
 if (!length(i_sp)) stop("種が見つかりません: ", SPECIES)
@@ -226,11 +242,21 @@ if (t_now > 6 * 3600) {
 # ---------------------------------------------------------------------------
 # 3. 組み立て
 # ---------------------------------------------------------------------------
+## ここで初めて尤度エンジンを読む（§1-2 の検査には要らないため。上の注を参照）
+say("§3 尤度エンジンを読み込み中（C++ のコンパイルで30秒ほど）...")
+suppressMessages(suppressWarnings(source("adcrsgd/secrad.r", encoding = "UTF-8")))
+source("adcrsgd/sgd_utils.R", encoding = "UTF-8")
+say("  読み込み完了")
+
+say("  secrad_data を作成中...")
 secrdata <- secrad_data$new(coords = coords, area = area,
                             grid_cov = grid_cov, resolution = resolution)
+say(sprintf("  detect を密行列に展開中（%d × %d = %.2f GB）...",
+            nrow(detect), nind, nrow(detect) * nind * 8 / 1e9))
 secrdata$add_obs(type = "poisson", effort = effort_vec,
                  effort_loc = effort_loc, effort_occ = effort_occ,
                  detect = as.matrix(detect))
+say("  add_obs 完了")
 obj <- secrad$new(secrdata = secrdata)
 obj$set_model(envmodel = list(D ~ 1, C ~ agri + wtr, A ~ 0),
               indmodel = c(A = FALSE, g0 = FALSE),
