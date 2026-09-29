@@ -211,18 +211,62 @@ say(sprintf("★ 見込みメモリ: ncell %d × nind %d × 8バイト × 2 = **
 say(sprintf("   advdiff の ncell² が別に %.2f GB（固有値分解でその数倍）", gb_ad))
 say(sprintf("   pcap の返り値 nmu × nind が別に %.1f GB", ncell * nind * 8 / 1e9))
 
-## results/pcap_bench.csv の実測から外挿
-## 基準: nmu 400 / neffort 25 / nind 19,200 → 現行 83.09秒 / 修正版 7.02秒
-BASE <- 400 * 19200 * 25
-work <- ncell * nind * neffort
-t_fix <- 7.02 * work / BASE                       # 修正版は nmu·nind·neffort に比例
-t_now <- t_fix * (nind / 1627)                    # 現行は さらに nind に比例
+## results/pcap_bench.csv の実測から外挿。
+## 基準点: nmu 400 / neffort 25 / nind 19,200 → 現行 83.09秒 / 修正版 7.02秒
+##
+## ループは nmu × nind × neffort なので nmu と neffort には線形。
+## `nind` は **実測の指数**を使う（CLAUDE.md の表。現行 1.78 / 修正版 1.10）。
+## 現行が1乗より大きいのは `ind_cov.minCoeff()` が最内ループにあるため。
+##
+## ★ **すべて as.numeric() にすること。** ncell・nind・neffort はどれも R の整数型で、
+##   積は 1.9e12 と 2^31 を超える。**2026-09-29 にこれで NA を出して落ちた。**
+EXP_NOW <- 1.78; EXP_FIX <- 1.10
+est_pcap <- function(nmu, nind, neff, fixed = FALSE) {
+  t0 <- if (fixed) 7.02 else 83.09
+  k  <- if (fixed) EXP_FIX else EXP_NOW
+  t0 * (as.numeric(nmu) / 400) * (as.numeric(neff) / 25) *
+    (as.numeric(nind) / 19200)^k
+}
+work  <- as.numeric(ncell) * as.numeric(nind) * as.numeric(neffort)
+t_now <- est_pcap(ncell, nind, neffort)
+t_fix <- est_pcap(ncell, nind, neffort, fixed = TRUE)
+fmt_t <- function(s) if (s < 3600) sprintf("%.1f 分", s / 60) else
+  if (s < 86400) sprintf("%.1f 時間", s / 3600) else sprintf("%.1f 日", s / 86400)
+
 say("")
 say("★ pcap の時間の見積もり（results/pcap_bench.csv からの外挿）")
 say(sprintf("   nmu %d × nind %d × neffort %d = %.3g", ncell, nind, neffort, work))
-say(sprintf("   **現行コード      : %.1f 時間（%.1f 日）**", t_now / 3600, t_now / 86400))
-say(sprintf("   pcap を修正した場合: %.1f 時間", t_fix / 3600))
+say(sprintf("   **現行コード      : %s**", fmt_t(t_now)))
+say(sprintf("   pcap を修正した場合: %s", fmt_t(t_fix)))
 say("   ＊ クマは loglf 1回 181秒（nmu 8497 / nind 109 / neffort 227）")
+
+## 間引きの効き目。**nind は rate に比例しない**（複数回捕獲は全部使うため）
+if (RATE >= 1 && exists("cnt")) {
+  n_multi <- sum(cnt > 1); n_single <- sum(cnt == 1)
+  say("")
+  say("   間引いた場合（複数回は全部使うので rate に比例しない）:")
+  for (r in c(0.5, 0.2, 0.1, 0.05)) {
+    ne <- n_multi + floor(n_single * r)
+    say(sprintf("     rate %.2f → nind %6d : 現行 %-10s / 修正版 %s",
+                r, ne, fmt_t(est_pcap(ncell, ne, neffort)),
+                fmt_t(est_pcap(ncell, ne, neffort, fixed = TRUE))))
+  }
+}
+stopifnot(is.finite(t_now), is.finite(t_fix))
+
+## --- ★ 判断に要るのは「SGD 全体」の時間 --------------------------------------
+##
+## `loglf` 1回では足りない。クマの実測では **1反復 = loglf 約5.2回ぶん**
+## （1反復 936秒 ÷ loglf 181秒。有限差分で係数ごとに測るため）。
+## Step 3 で参照解に到達したのは **300反復**。
+LL_PER_ITER <- 5.2; N_ITER <- 300
+say("")
+say(sprintf("★ SGD 全体の見積もり（1反復 = loglf %.1f回 × %d反復。クマの実測に基づく）",
+            LL_PER_ITER, N_ITER))
+say(sprintf("   **現行コード      : %s**", fmt_t(t_now * LL_PER_ITER * N_ITER)))
+say(sprintf("   pcap を修正した場合: %s", fmt_t(t_fix * LL_PER_ITER * N_ITER)))
+say("   ＊ クマ（`far` から参照解へ）は 300反復 / 78時間")
+say("   ＊ 多峰性のため **3点以上からの多点出発**が要る（CLAUDE.md）。上の値×3")
 if (t_now > 6 * 3600) {
   say("")
   say("   ⚠⚠ **この規模では完走しない。** 次のいずれかが要る:")
