@@ -40,7 +40,7 @@ Rscript examples/plot_moves_national.R
 
 ## 1. 4種の比較
 
-![図1. 4種の全国移動。薄紫が捕獲のあったセル、青い矢印が500km未満の移動、赤い矢印が500km以上の移動。矢印は両端が捕獲地で、方向は区別していない。](figures/moves-fig-4sp.png)
+図は §2 に1種ずつ載せる。先に数値だけ並べる。
 
 | 種 | 個体数 | 複数回捕獲 | **移動** | **つながり** | 中央値 | 最大 | **500km以上** |
 |---|---|---|---|---|---|---|---|
@@ -56,9 +56,15 @@ Rscript examples/plot_moves_national.R
 
 ## 2. 種ごとに見る
 
+**4枚を並べた図は作らない。** 1枚あたりが小さくなると、矢印がどのメッシュを
+結んでいるのかが読めなくなるため（必要なら `--panel` を付けると作られる）。
+
+どの図も共通で、**薄紫が捕獲のあったセル、青い矢印が500km未満の移動、
+赤い矢印が500km以上の移動**。矢印は両端が捕獲地で、方向は区別していない。
+
 ### ノジコ — 件数は最多だが、1か所に集中している
 
-![図2. ノジコ。移動29件だが、すべて新潟〜長野の狭い範囲に集中している。500km以上は0件。](figures/moves-fig-nojiko.png)
+![図1. ノジコ。移動29件だが、すべて新潟〜長野の狭い範囲に集中している。500km以上は0件。](figures/moves-fig-nojiko.png)
 
 - **29件の移動が、わずか10本のつながりに集中**している。
   同じ標識ステーションの組を複数個体が行き来している形
@@ -74,7 +80,7 @@ Rscript examples/plot_moves_national.R
 
 ### ウグイス — つながりは最多だが、渡りが混じる
 
-![図3. ウグイス。北海道〜九州の2,274kmを含む長距離移動が4件。](figures/moves-fig-uguisu.png)
+![図2. ウグイス。北海道〜九州の2,274kmを含む長距離移動が4件。つながり16本が全国に分散している。](figures/moves-fig-uguisu.png)
 
 - **つながり16本で4種の最多**、しかも**全国に分散**している
 - ただし **500km以上が4件**。最長は **2,274 km（九州 ←→ 北海道）**
@@ -86,7 +92,7 @@ Rscript examples/plot_moves_national.R
 
 ### シジュウカラ — 短距離のみ。解釈が素直
 
-![図4. シジュウカラ。最大219km、500km以上は0件。北海道・中部・関東に分散。](figures/moves-fig-shijukara.png)
+![図3. シジュウカラ。最大219km、500km以上は0件。北海道・中部・関東に分散している。](figures/moves-fig-shijukara.png)
 
 - **500km以上は0件。最大 219 km、中央値 41 km**
 - つながり14本。**移動が北海道・中部・関東に分かれている**
@@ -96,7 +102,7 @@ Rscript examples/plot_moves_national.R
 
 ### クロツグミ — 長距離が半分近い
 
-![図5. クロツグミ。13件中4件が500km以上、最大1,068km。中央値も214kmと長い。](figures/moves-fig-kurotsugumi.png)
+![図4. クロツグミ。13件中4件が500km以上、最大1,068km。中央値も214kmと長い。北海道と本州を結ぶ矢印が目立つ。](figures/moves-fig-kurotsugumi.png)
 
 - 移動13件のうち **4件が500km以上**。最大 1,068 km
 - **中央値が 214 km** と4種で突出して長い
@@ -185,6 +191,91 @@ Rscript examples/plot_moves_national.R
 
 ---
 
-*数値の出所: `results/moves_national.csv`。
-図: `examples/plot_moves_national.R`。
-明細: `examples/band_moves.R`。*
+## 6. データの出所
+
+### どのスクリプトが何を書き出すか
+
+**このレポートの表と図は、すべて `examples/plot_moves_national.R` が作っている。**
+
+| 書き出すもの | 作るスクリプト | 内容 |
+|---|---|---|
+| **`results/moves_national.csv`** | **`examples/plot_moves_national.R`** | **このレポートの §1 の表**（4種 × 12列） |
+| `reports/figures/moves-fig-*.png` | `examples/plot_moves_national.R` | §2 の図 |
+| `results/band_moves_all.csv` | `examples/band_moves.R` | **個体単位の明細**（全30種・4,462件）。年やセル番号を含む |
+| `results/band_moves_far.csv` | `examples/band_moves.R` | 上のうち長距離のもの |
+
+**`examples/band_moves.R` は `results/moves_national.csv` を作っていない。**
+別のファイル（`band_moves_*.csv`）を書き出す別のスクリプトで、
+**同じ量を独立に計算している**。値は一致する（シジュウカラ 17件、
+ウグイス 26件など）。
+
+`band_moves_*.csv` は**個体単位の記録**なので、
+「追跡対象はコードのみ」の方針により **git には入れていない**。
+必要なときに `Rscript examples/band_moves.R` で作り直す。
+
+### 元データ
+
+`examples/plot_moves_national.R` は `config.R` 経由で次の3つを読む。
+**いずれも読むだけで、書き換えない。**
+
+| `config.R` の変数 | 実体（編集機での解決先） | このレポートでの役割 |
+|---|---|---|
+| **`BAND_RDS`** | `../../git/band_data_list_30sp_20251218.rds` | **数値はすべてここから** |
+| **`BAND_MESH`** | `../../griddata/mesh2_convex7.gpkg` | セルの位置（＝距離の計算） |
+| `LAND_SHP` | `S:/common/.../Japan_merge2.shp` | **図の海岸線だけ。数値には使わない** |
+
+（解析機ではリポジトリの位置が違うので `BAND_RDS` は `../band_data_list_30sp_20251218.rds` に解決される。`config.R` は `.gitignore` 済みでマシンごとに別。）
+
+### `BAND_RDS` の中身と、どこを使っているか
+
+`band_data_list_30sp_20251218.rds` は3つの要素を持つリスト。
+
+| 要素 | 形 | このレポートでの使い方 |
+|---|---|---|
+| `splist` | 文字列 236件 | 種名から `detect_list` の番号を引く |
+| `effort` | 4,229行 × 5列 | 下記 |
+| `detect_list` | 疎行列 30件 | 種ごとの検出行列 |
+
+`effort` の5列のうち、**実際に使っているのは `meshcode` だけ**。
+
+| 列 | 使う? | 備考 |
+|---|---|---|
+| `YEAR` | 図・表には使わない | `band_moves.R` の明細では使う |
+| **`meshcode`** | **使う** | **★ JIS コードではなく `mesh2_convex7.gpkg` の行番号**（`make_data&plot.R:99-100` の `row_number()`） |
+| `effort` | 使わない | 努力量。`plot_band_kanto.R` では使う |
+| `effortID` | 使わない | |
+| `effort_occ` | 使わない | 機会（1〜10） |
+
+`detect_list[[i]]` は **行 = 検出努力（4,229）／列 = 個体**の疎行列
+（`dgCMatrix`）。計算には内部表現を直接使う。
+
+| 使うもの | 意味 |
+|---|---|
+| `m@p` / `m@i` | 格納要素が「どの個体・どの努力行」か |
+| **`m@x`** | **値（捕獲回数）。`m@x > 0` で絞る** |
+
+**★ `m@x > 0` の絞り込みが必須。** 各種ちょうど1列、
+全要素が 0 のダミー個体が入っており、落とさないと
+「捕獲0回の個体が800セル以上を移動した」ことになる
+（`docs/20260929_作業記録.md`）。
+
+### 移動の判定と距離の計算
+
+1. 検出行列の格納要素のうち `m@x > 0` のものを (個体, 努力行) の組にする
+2. 努力行 → `effort$meshcode` → **`mesh2_convex7.gpkg` の行番号**
+3. 個体ごとに**異なるセルの数**を数え、2以上なら「移動あり」
+4. 距離は `st_centroid(mesh)` の**重心間の直線距離**（CRS は JGD2000 / UTM zone 54N、単位 m → km）
+5. `つながり` は、移動した個体のセルの組を**順不同で重複除去**した数
+
+### そのさらに上流
+
+`band_data_list_30sp_20251218.rds` 自体は、生の標識データから
+`make_data&plot.R` と `functions.R`（`make.effort2`）が作ったもの。
+**このレポートの範囲外**だが、`meshcode` が行番号である理由はそこにある。
+経緯は `reports/20260928_band_scale.md` §4。
+
+---
+
+*再現: `Rscript examples/plot_moves_national.R`（図と §1 の表）、
+`Rscript examples/band_moves.R`（個体単位の明細）。
+経緯: `docs/20260929_作業記録.md`。*

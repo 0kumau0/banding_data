@@ -34,7 +34,7 @@
   if (is.na(i) || i == length(.args)) default else .args[i + 1L]
 }
 .known <- c("--species", "--slug", "--mesh", "--rds", "--land", "--prefix", "--out")
-.bad <- setdiff(grep("^--", .args, value = TRUE), .known)
+.bad <- setdiff(grep("^--", .args, value = TRUE), c(.known, "--panel"))
 if (length(.bad)) stop("知らない引数: ", paste(.bad, collapse = " "),
                        "\n使えるのは: ", paste(.known, collapse = " "))
 
@@ -146,13 +146,25 @@ draw_one <- function(x, cex_main = 1) {
   invisible(list(n_mv = n_mv, n_pair = n_pair))
 }
 
-## --- 2x2 のまとめ図 ---------------------------------------------------------
-png(file.path(FIGDIR, paste0(PREFIX, "-4sp.png")), width = 1500, height = 1500, res = 120)
-op <- par(mfrow = c(2, 2), mar = c(1, 1, 2.5, 1))
-info <- lapply(dat, draw_one, cex_main = 1.1)
-par(op)
-dev.off()
-say("  図: ", file.path(FIGDIR, paste0(PREFIX, "-4sp.png")))
+## --- まとめ図（--panel を付けたときだけ）------------------------------------
+## **既定では作らない。** 4枚を並べると1枚あたりが小さくなり、
+## 矢印がどのメッシュを結んでいるのかが読めなくなる（2026-09-29 の指示）。
+## レポートでは種ごとの単独図を使う。
+## つながりの本数の計算はここで済ませるので、パネルを描かないときも
+## 同じ関数を「描画せずに」通す必要がある → 一時ファイルに捨てる
+if ("--panel" %in% .args) {
+  f4 <- file.path(FIGDIR, paste0(PREFIX, "-4sp.png"))
+  png(f4, width = 1500, height = 1500, res = 120)
+  op <- par(mfrow = c(2, 2), mar = c(1, 1, 2.5, 1))
+  info <- lapply(dat, draw_one, cex_main = 1.1)
+  par(op); dev.off()
+  say("  図: ", f4)
+} else {
+  tmp <- tempfile(fileext = ".png")
+  png(tmp, width = 600, height = 600)
+  info <- lapply(dat, draw_one)
+  dev.off(); unlink(tmp)
+}
 
 ## --- 種ごとの単独図 ---------------------------------------------------------
 for (k in seq_along(SPP)) {
