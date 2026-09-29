@@ -109,11 +109,24 @@
 #       チェックポイントと結果のファイル名に INIT_MODE が入るので、
 #       第1〜2段の結果とは別物として並存する。
 #
-# sampling_rate は 1.0 のままでよい。合成データでの検証（Step 1、
-# reports/sampling_report.md）で、**下げても BFGS 解には届くが速度は
-# ほとんど変わらない**（rate 1.0 → 0.1 で 4.4%）ことが分かっている。
-# 下げる価値があるのは実データでの再現性を確認したいときだけで、
-# その場合も標準化の修正とは別の run にすること（2つ同時に変えない）。
+# --- 間引き（--rate）について -----------------------------------------------
+#
+# 既定は 1.0（単回捕獲個体も全件使う＝完全バッチ）。**クマでは速くならない**
+# — 合成データでの検証（Step 1、reports/sampling_report.md）で
+# rate 1.0 → 0.1 でも 4.4% しか縮まなかった。クマは ncell がコストを支配するため。
+#
+# **それでも下げる run に意味があるのは、速度ではなく検証のため。**
+# 勝った設定（beta2 0.9 / alpha×4）で間引いても同じ着地点に来るかは
+# **実データで未確認**（CLAUDE.md「未決着」①）。足環データでは間引きが
+# 本番の条件になるので、クマで先に確かめておく価値がある。
+#
+#   Rscript SGD_bear_20260909.R --init far --tag b90a4r10 \
+#           --beta2 0.90 --alpha-mult 4 --max-iter 300 --rate 0.1
+#
+# **--tag を必ず分けること。** チェックポイントと結果のファイル名は
+# INIT_MODE と --tag だけで決まるので、使い回すと rate 1.0 の run を
+# 引き継いでしまう（再開ガードでも止めるようにしたが、まず名前を分ける）。
+# 一度に変える条件は1つにすること。
 # ---------------------------------------------------------------------------
 
 
@@ -253,6 +266,11 @@ if ("--no-hessian"  %in% .args) HESSIAN   <- FALSE
 if (!is.null(.opt("--max-iter"))) MAX_ITER  <- as.integer(.opt("--max-iter"))
 if (!is.null(.opt("--init")))     INIT_MODE <- .opt("--init")
 if (!is.null(.opt("--beta2")))    BETA2     <- as.numeric(.opt("--beta2"))
+## 間引き（単回捕獲個体だけを抽出し 1/rate で重み戻す）。
+## **未決着事項①の検証用**（CLAUDE.md「未決着」）: 勝った設定
+## （beta2 0.9 / alpha×4）で rate を下げても着地点が変わらないかを実データで確認する。
+## **必ず --tag を分けること**（下の再開ガードを参照）。
+if (!is.null(.opt("--rate")))     SAMPLING_RATE <- as.numeric(.opt("--rate"))
 
 RUN_TAG <- .opt("--tag", "")
 
@@ -260,7 +278,7 @@ RUN_TAG <- .opt("--tag", "")
 # 古い版のスクリプトに新しいフラグを渡すと、指定したつもりの設定が効かないまま
 # 何時間も走ることになる（2026-09-11、--no-hessian でこれが起きた）。
 .flags_noarg <- c("--dry-run", "--no-sgd", "--no-optim", "--no-hessian")
-.flags_arg   <- c("--max-iter", "--init", "--beta2", "--tag",
+.flags_arg   <- c("--max-iter", "--init", "--beta2", "--tag", "--rate",
                   "--alpha-mult", "--threads",
                   "--multistart", "--ms-max-hours", "--ms-maxit")
 .known <- character(0)
@@ -296,7 +314,16 @@ if (!is.null(.opt("--threads")))
 
 stopifnot(INIT_MODE %in% c("far", "transformed"),
           is.finite(ALPHA_MULT), ALPHA_MULT > 0,
+          is.finite(SAMPLING_RATE), SAMPLING_RATE > 0, SAMPLING_RATE <= 1,
           grepl("^[A-Za-z0-9_-]*$", RUN_TAG))
+
+## **rate を下げたのに --tag を分けていないと、前の run のチェックポイントを
+## 引き継いでしまう**（ファイル名は INIT_MODE と --tag だけで決まるため）。
+## 下の再開ガードでも止めるが、ここで先に気づけるようにしておく。
+if (SAMPLING_RATE < 1 && !nzchar(RUN_TAG))
+  stop("--rate を下げるときは --tag を付けてください。\n",
+       "       付けないと rate 1.0 の run とチェックポイント・結果ファイルが",
+       "衝突します。\n       例: --rate 0.1 --tag b90a4r10")
 
 # DRY_RUN の上書きは sink より前に済ませる。出力ファイル名を別にして
 # 本番の結果とログを上書きしないため。
@@ -823,6 +850,15 @@ if (RUN_SGD) {
     if (!is.null(ck$beta2) && !isTRUE(all.equal(ck$beta2, BETA2)))
       stop("チェックポイントの beta2 (", ck$beta2, ") が現在の設定 (",
            BETA2, ") と違います。--tag を分けて別の run にしてください。")
+    ## **sampling_rate も照合する**（2026-09-29 に追加）。
+    ## チェックポイントには前から保存されていたのに、ここで見ていなかった。
+    ## そのため `--tag` を使い回して `--rate` だけ変えると、
+    ## **rate 1.0 の完了済みチェックポイントを黙って引き継ぐ**。
+    ## 目的（間引いても同じ着地点に来るかの検証）が丸ごと台無しになる。
+    if (!is.null(ck$sampling_rate) && !isTRUE(all.equal(ck$sampling_rate, SAMPLING_RATE)))
+      stop("チェックポイントの sampling_rate (", ck$sampling_rate,
+           ") が現在の設定 (", SAMPLING_RATE, ") と違います。",
+           "--tag を分けて別の run にしてください。")
     current_par <- ck$current_par; m <- ck$m; v <- ck$v
     iter_done <- ck$iter_done
     n <- min(iter_done, MAX_ITER)
