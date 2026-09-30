@@ -54,7 +54,7 @@ t_start <- Sys.time()
 }
 .known <- c("--nx", "--traps", "--reps", "--g0", "--dens", "--maxit", "--out")
 .bad <- setdiff(grep("^--", .args, value = TRUE),
-                c(.known, "--dry-run", "--calibrate", "--far"))
+                c(.known, "--dry-run", "--calibrate", "--far", "--ablate"))
 if (length(.bad)) stop("知らない引数: ", paste(.bad, collapse = " "),
                        "\n使えるのは: ", paste(c(.known, "--dry-run"), collapse = " "))
 
@@ -64,6 +64,8 @@ CALIB   <- "--calibrate" %in% .args   # 生成だけして n_pair の出方を�
 ## 主問題は「尤度に情報があるか」で、それは真値出発の当てはめで測れる。
 ## 多峰性（情報はあるが到達できない）は別問題なので、必要なときに --far で足す
 DO_FAR  <- "--far" %in% .args
+## 対照実験: 同じデータから「つながりだけ」を壊して当てはめ直す（下の ablate_detect）
+ABLATE  <- "--ablate" %in% .args
 NX      <- as.integer(.opt("--nx", "16"))          # 格子の1辺。ncell = NX^2
 NTRAP1  <- as.integer(.opt("--traps", "6"))        # 検出器は NTRAP1^2 基
 REPS    <- as.integer(.opt("--reps", "6"))         # 各水準の繰り返し
@@ -158,6 +160,61 @@ count_moves <- function(detect) {
        n_ind = ncol(d), n_multi = sum(colSums(d) > 1), n_rec = sum(d))
 }
 
+## 推定用のオブジェクトを検出行列から組む。
+## **full 版と ablate 版で同じ手順を通す**ため関数にしておく
+## （片方だけ simulate 由来のオブジェクトを使うと比較にならない）
+make_est_obj <- function(detect) {
+  sd <- secrad_data$new(coords = cbind(x = xcoord, y = ycoord),
+                        area = rep(CELL_AREA, ncell),
+                        grid_cov = grid_cov,
+                        resolution = c(x = CELL_SIZE, y = CELL_SIZE))
+  sd$add_obs(type = "poisson", effort = rep(EFFORT, ntrap),
+             effort_loc = effort_loc, effort_occ = rep(N_OCCASION, ntrap),
+             detect = as.matrix(detect))
+  ob <- secrad$new(secrdata = sd)
+  ob$set_model(envmodel = MODEL$envmodel, indmodel = MODEL$indmodel,
+               occmodel = MODEL$occmodel)
+  ob
+}
+
+## ★★ **つながりだけを壊す**（対照実験）。
+##
+## 2026-09-29 のユーザの指摘: 「移動がない再捕獲が何度も検出されることにも
+## 生態学的な意味がある。その例が多いことは計算の助けにならないのか」
+##
+## 尤度は捕獲履歴の**全体**（捕まらなかった検出器の 0 も含む）を使うので、
+## 「同じ検出器で5回・隣では0回」も行動圏が小さいことの証拠になる。
+## **同じ場所の再捕獲も情報を持っている。**
+##
+## ただし `g0` を振る走査では「同じ場所の再捕獲数」と「移動の本数」が
+## **同時に増える**ので、どちらが効いたか分離できない。
+##
+## そこで**同じデータから、つながりだけを壊す**:
+##
+##   2基以上で捕まった個体を、**検出器ごとに別個体に分解する**
+##   例: 個体 #7 が A で1回・B で1回 → 「A で1回の個体」と「B で1回の個体」
+##
+## **総捕獲数も、検出器ごとの捕獲数も、空間パターンも変わらない。**
+## 消えるのは「同一個体である」という繋がりだけ。
+## 標準誤差の差が、そのまま**移動の情報の価値**になる。
+##
+## ⚠ 分解するぶん検出個体数は増える（移動個体の数だけ）。
+##   これは「個体識別ができなかったら何が見えるか」という対照そのものなので
+##   意図した挙動だが、密度の項に効くことは承知しておく
+ablate_detect <- function(m) {
+  d <- as.matrix(m)
+  out <- vector("list", 0)
+  for (j in seq_len(ncol(d))) {
+    k <- which(d[, j] > 0)
+    if (length(k) <= 1L) { out[[length(out) + 1L]] <- d[, j]; next }
+    for (kk in k) {
+      v <- numeric(nrow(d)); v[kk] <- d[kk, j]
+      out[[length(out) + 1L]] <- v
+    }
+  }
+  matrix(unlist(out), nrow = nrow(d))
+}
+
 ## 当てはめ。**loglfscale = -1 で optim に最小化させる**
 fit_one <- function(obj, init, hessian = FALSE) {
   r <- tryCatch(optim(init, obj$loglf, method = "BFGS",
@@ -248,12 +305,10 @@ for (g0 in G0_SET) {
   for (rep_i in seq_len(REPS)) {
     t_rep <- Sys.time()
     sd <- simulate_once(g0)
-    mv <- count_moves(sd$obs[[1]]$detect)
+    det0 <- sd$obs[[1]]$detect
+    mv <- count_moves(det0)
 
-    ob <- secrad$new(secrdata = sd)
-    ob$set_model(envmodel = MODEL$envmodel, indmodel = MODEL$indmodel,
-                 occmodel = MODEL$occmodel)
-
+    ob <- make_est_obj(det0)
     truth <- setNames(c(DENS, unname(TRUE_CONN), g0), PAR_NAMES)
     ## (a) **真値から出発**。最適化の失敗を排除したときの情報量の上限
     fa <- fit_one(ob, truth, hessian = TRUE)
@@ -277,6 +332,28 @@ for (g0 in G0_SET) {
       r[[paste0("se_",  p)]] <- unname(fa$se[p])
       r[[paste0("err_", p)]] <- unname(fa$par[p] - truth[p])
     }
+
+    ## --- 対照: つながりだけを壊した同じデータ -------------------------------
+    r$abl_nind <- NA_integer_
+    for (p in PAR_NAMES) { r[[paste0("abl_se_", p)]] <- NA_real_
+                           r[[paste0("abl_est_", p)]] <- NA_real_ }
+    if (ABLATE) {
+      det1 <- ablate_detect(det0)
+      ob1  <- make_est_obj(det1)
+      fc   <- fit_one(ob1, truth, hessian = TRUE)
+      if (!is.null(fc)) {
+        r$abl_nind <- ncol(det1)
+        for (p in PAR_NAMES) {
+          r[[paste0("abl_se_",  p)]] <- unname(fc$se[p])
+          r[[paste0("abl_est_", p)]] <- unname(fc$par[p])
+        }
+        say(sprintf("      [対照] つながりを壊すと 個体 %d→%d / conn_agri SE %s→%s / conn_wtr SE %s→%s",
+                    ncol(det0), ncol(det1),
+                    sprintf("%.3f", fa$se["conn_agri"]), sprintf("%.3f", fc$se["conn_agri"]),
+                    sprintf("%.3f", fa$se["conn_wtr"]),  sprintf("%.3f", fc$se["conn_wtr"])))
+      }
+    }
+
     rows[[length(rows) + 1L]] <- r
 
     say(sprintf("  g0 %.1f rep%d: 個体 %4d / 移動 %3d / **つながり %3d** / %.0f秒",
@@ -335,6 +412,38 @@ say("    符号一致 … 効果の向きだけでも当てられた割合。1.0
 say("               「農地が透過性を上げるか下げるか」すら言えない")
 say("    同じ峰   … 遠方初期値が真値出発と同じ対数尤度に着いた割合。")
 say("               低ければ**情報はあっても実務では多点出発が要る**")
+
+## --- 対照実験のまとめ -------------------------------------------------------
+if (ABLATE && any(is.finite(res$abl_se_conn_agri))) {
+  say("")
+  say(strrep("=", 74))
+  say("  ★ 対照実験 — つながりだけを壊すと標準誤差はどうなるか")
+  say(strrep("=", 74))
+  say("  **総捕獲数も、検出器ごとの捕獲数も、空間パターンも同じ。**")
+  say("  消えるのは「同一個体である」という繋がりだけ。")
+  say("")
+  s <- res[is.finite(res$abl_se_conn_agri), , drop = FALSE]
+  say(sprintf("  %8s %6s %10s %10s %8s %10s %10s %8s",
+              "つながり", "個体", "agri SE", "壊した後", "倍率", "wtr SE", "壊した後", "倍率"))
+  o <- order(s$n_pair)
+  for (i in o)
+    say(sprintf("  %8d %6d %10.3f %10.3f %8.2f %10.3f %10.3f %8.2f",
+                s$n_pair[i], s$n_ind[i],
+                s$se_conn_agri[i], s$abl_se_conn_agri[i],
+                s$abl_se_conn_agri[i] / s$se_conn_agri[i],
+                s$se_conn_wtr[i], s$abl_se_conn_wtr[i],
+                s$abl_se_conn_wtr[i] / s$se_conn_wtr[i]))
+  ra <- stats::median(s$abl_se_conn_agri / s$se_conn_agri)
+  rw <- stats::median(s$abl_se_conn_wtr  / s$se_conn_wtr)
+  say("")
+  say(sprintf("  **SE の倍率（中央値）: conn_agri %.2f 倍 / conn_wtr %.2f 倍**", ra, rw))
+  say("")
+  say("  ★ 読み方")
+  say("    倍率が大きい … **移動の情報が透過性を支えている。**")
+  say("                    同じ場所の再捕獲だけでは代わりにならない")
+  say("    倍率が 1 に近い … **同じ場所の再捕獲が大半を担っている。**")
+  say("                    移動の本数にこだわる前提そのものを見直す必要がある")
+}
 
 say("")
 say("  ★ 実データの位置")
