@@ -52,13 +52,19 @@ t_start <- Sys.time()
   i <- match(flag, .args)
   if (is.na(i) || i == length(.args)) default else .args[i + 1L]
 }
-.known <- c("--dbf", "--place", "--splist", "--species", "--breaks",
-            "--res", "--maxgap", "--out")
+.known <- c("--dbf", "--place", "--splist", "--species", "--spc", "--breaks",
+            "--res", "--maxgap", "--out", "--list")
 .bad <- setdiff(grep("^--", .args, value = TRUE), c(.known, "--peek"))
 if (length(.bad)) stop("知らない引数: ", paste(.bad, collapse = " "),
                        "\n使えるのは: ", paste(c(.known, "--peek"), collapse = " "))
 
 PEEK   <- "--peek" %in% .args
+## ★ **種コード（SPC）で選ぶのが確実。** DBF は Shift-JIS で、`read.dbf` には
+## encoding 指定が無いため種名が化けることがある（2026-10-01 に実際に化けた）。
+## SPC は ASCII なので文字コードの影響を受けない。
+## `--list` で「記録数の多い順の一覧（SPC つき）」を出せるので、そこから選ぶ。
+SPC_SEL <- if (!is.null(.opt("--spc"))) strsplit(.opt("--spc"), ",")[[1]] else NULL
+LIST    <- "--list" %in% .args
 SPP    <- strsplit(.opt("--species",
   "ｽｽﾞﾒ,ﾒｼﾞﾛ,ｳｸﾞｲｽ"), ",")[[1]]  # ｽｽﾞﾒ,ﾒｼﾞﾛ,ｳｸﾞｲｽ
 BREAKS <- as.integer(strsplit(.opt("--breaks", "1961,1971,1981,1991,2001,2011"), ",")[[1]])
@@ -106,33 +112,67 @@ d$YEAR <- as.integer(d$YEAR)
 yr <- range(d$YEAR, na.rm = TRUE)
 say(sprintf("  **年の範囲: %d 〜 %d**（%d 年分）", yr[1], yr[2], yr[2] - yr[1] + 1))
 
-## 種名。DBF は SPC（コード）だけのことがあるので Splist.DBF で引く
-sp_col <- NA_character_
-for (nm in c("SPNAMK", "SPNAME", "SPC"))
-  if (nm %in% names(d)) { sp_col <- nm; break }
-if (identical(sp_col, "SPC") && file.exists(SPLIST)) {
+## ★ DBF は Shift-JIS。`read.dbf` に encoding 指定が無いので変換を試みる。
+## （`Sys.setlocale` は呼ばない。UTF-8 ファイルではパースが壊れる。CLAUDE.md）
+fix_enc <- function(x) {
+  if (!is.character(x)) return(x)
+  y <- suppressWarnings(iconv(x, from = "CP932", to = "UTF-8"))
+  ifelse(is.na(y) | !nzchar(y), x, y)
+}
+
+## 種名。DBF は SPC（コード）だけなので Splist.DBF で引く
+d$SPC <- as.character(d$SPC)
+d$.sp <- d$SPC                      # 既定は**コード**。文字コードの影響を受けない
+sp_src <- "SPC"
+if (file.exists(SPLIST)) {
   sl <- read.dbf(SPLIST, as.is = TRUE)
   say("  Splist.DBF: ", nrow(sl), " 行 / 列: ", paste(names(sl), collapse = ", "))
   if (all(c("SPC", "SPNAMK") %in% names(sl))) {
-    d <- d %>% left_join(sl %>% dplyr::select(SPC, SPNAMK) %>% distinct(SPC, .keep_all = TRUE),
-                         by = "SPC")
-    sp_col <- "SPNAMK"
-    say("  種名は Splist.DBF の SPNAMK を結合した")
-  }
-}
-if (is.na(sp_col)) stop("種を表す列が見つかりません")
-d$.sp <- as.character(d[[sp_col]])
-say("  種の列: ", sp_col, "（", length(unique(d$.sp)), " 種）")
+    sl$SPC <- as.character(sl$SPC)
+    sl$SPNAMK <- fix_enc(as.character(sl$SPNAMK))
+    SPMAP <- setNames(sl$SPNAMK, sl$SPC)[!duplicated(sl$SPC)]
+    say("  種名を Splist.DBF の SPNAMK から引いた（CP932 → UTF-8 変換を試行）")
+  } else SPMAP <- NULL
+} else SPMAP <- NULL
+nm_of <- function(spc) if (is.null(SPMAP)) spc else {
+  v <- SPMAP[spc]; ifelse(is.na(v), spc, v) }
 
-miss <- setdiff(SPP, unique(d$.sp))
-if (length(miss)) {
-  cand <- unique(d$.sp)
-  say("  ⚠ 見つからない種: ", paste(miss, collapse = ", "))
-  say("    （--species で正確な表記を指定。--peek で一覧の一部が見られます）")
-  if (PEEK) print(utils::head(sort(cand), 40))
-  SPP <- setdiff(SPP, miss)
-  if (!length(SPP)) stop("対象の種が1つも無い")
+## --- 種の選択 ---------------------------------------------------------------
+## 記録数の多い順の一覧。**化けていてもコードと件数で特定できる**
+tb_spc <- sort(table(d$SPC), decreasing = TRUE)
+show_list <- function(n = 30) {
+  say("")
+  say(sprintf("  %-8s %12s  %s", "SPC", "記録数", "種名（化けている可能性あり）"))
+  for (k in utils::head(names(tb_spc), n))
+    say(sprintf("  %-8s %12s  %s", k, format(tb_spc[[k]], big.mark = ","), nm_of(k)))
+  say("")
+  say("  → **--spc <コード> で選ぶのが確実**（例: --spc ", names(tb_spc)[1], "）")
 }
+if (LIST) { show_list(60); quit(status = 0) }
+
+if (!is.null(SPC_SEL)) {
+  miss <- setdiff(SPC_SEL, names(tb_spc))
+  if (length(miss)) { say("  ⚠ 無い SPC: ", paste(miss, collapse = ", ")); show_list(30)
+                      stop("SPC が見つかりません") }
+  SEL <- SPC_SEL
+  say("  対象（SPC 指定）: ", paste(sprintf("%s(%s)", SEL, nm_of(SEL)), collapse = " / "))
+} else {
+  ## 名前で指定された場合。化けていると当たらないので、そのときは一覧を出す
+  nms <- nm_of(names(tb_spc))
+  SEL <- names(tb_spc)[nms %in% SPP]
+  if (!length(SEL)) {
+    say("")
+    say("  ⚠ 種名で一致するものがありません（**DBF の文字コードのため化けています**）。")
+    say("    記録数の多い順の一覧を出します。**スズメは最多級のはず**なので、")
+    say("    そこから SPC を選んで --spc で指定してください。")
+    show_list(30)
+    stop("種を特定できません。--spc <コード> を指定してください（--list で全一覧）")
+  }
+  say("  対象: ", paste(sprintf("%s(%s)", SEL, nm_of(SEL)), collapse = " / "))
+}
+SPP <- SEL                        # 以降は SPC で扱う
+d$.sp <- d$SPC
+LABEL <- function(spc) sprintf("%s(%s)", spc, nm_of(spc))
 
 ## 個体は GUID + RING の組
 if (!all(c("GUID", "RING", "PCODE") %in% names(d)))
@@ -224,7 +264,7 @@ pair_count <- function(id, key) {
 rows <- list()
 for (sp in SPP) {
   say("")
-  say("  【", sp, "】")
+  say("  【", LABEL(sp), "】")
   say(sprintf("    %-10s %9s %9s %8s %8s %9s %9s %11s",
               "期間", "記録", "個体", "複数回", "移動", "つながり", "地点", "延べ調査日"))
   for (pd in levels(d$.period)) {
@@ -280,7 +320,7 @@ say("")
 say(sprintf("  **全 %d 期間で稼働: %s 箇所**", np, format(length(full), big.mark = ",")))
 if (length(full)) {
   xs <- d[d$PCODE %in% full & d$.sp == SPP[1], , drop = FALSE]
-  say(sprintf("    そこでの %s の記録: %s 件 / 個体 %s", SPP[1],
+  say(sprintf("    そこでの %s の記録: %s 件 / 個体 %s", LABEL(SPP[1]),
               format(nrow(xs), big.mark = ","),
               format(length(unique(xs$.ring)), big.mark = ",")))
   say("    期間ごとの記録数:")
@@ -298,9 +338,9 @@ say("    調査地の移動という交絡を断てるので、トレンドの�
 if ("HABITAT" %in% names(place)) {
   say("")
   hr(); say("§6 捕獲地点の環境（PLACE.DBF の HABITAT）"); hr()
-  hb <- place %>% dplyr::select(PCODE, HABITAT) %>% distinct(PCODE, .keep_all = TRUE)
+  hb <- place %>% dplyr::select(PCODE, HABITAT) %>% mutate(HABITAT = fix_enc(as.character(HABITAT))) %>% distinct(PCODE, .keep_all = TRUE)
   dh <- d %>% left_join(hb, by = "PCODE")
-  say(sprintf("    %-16s %12s %12s", "環境", SPP[1], "全種"))
+  say(sprintf("    %-16s %12s %12s", "環境", LABEL(SPP[1]), "全種"))
   tot <- table(dh$HABITAT)
   t1  <- table(dh$HABITAT[dh$.sp == SPP[1]])
   ord <- names(sort(t1, decreasing = TRUE))
