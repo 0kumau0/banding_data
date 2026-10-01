@@ -188,24 +188,44 @@ if (any(!is.na(d$.reed)) && any(d$.reed, na.rm = TRUE)) {
   say("")
   hr(); say("§4 アシ原かどうかで分けた中央値と95%点"); hr()
   say("  ねぐらは主にアシ原。**アシ原でだけ裾が消えていればねぐらの事情**")
+
+  ## ★ **努力量も層別して出す**（2026-10-01 に追加）。
+  ## 初版は事象数しか出しておらず、「アシ原の事象が 1,000 → 441 に減った」のが
+  ## **スズメの減少なのかアシ原での努力の減少なのか判断できなかった**。
+  ## 分母が無い数字は比較に使えない
+  eff_rd <- unique(d[, c(".ev", ".period", ".reed")])
+  say("")
+  say("  ── 層別の努力量（調査日数）──")
+  say(sprintf("    %-10s %12s %12s %10s", "期間", "アシ原", "その他", "アシ原の割合"))
+  for (p in levels(d$.period)) {
+    z <- eff_rd[eff_rd$.period == p & !is.na(eff_rd$.reed), , drop = FALSE]
+    a <- sum(z$.reed); b <- sum(!z$.reed)
+    say(sprintf("    %-10s %12s %12s %9.1f%%", p,
+                format(a, big.mark = ","), format(b, big.mark = ","),
+                if (a + b) 100 * a / (a + b) else NA))
+  }
+
   for (s in SPC_SEL) {
     say("")
-    say("  【", LABEL(s), "】")
-    say(sprintf("    %-10s %10s %8s %8s %10s %8s %8s", "期間",
-                "アシ原 事象", "中央", "95%", "その他 事象", "中央", "95%"))
+    say("  【", LABEL(s), "】 事象 / 出現率 / 中央 / 95%")
+    say(sprintf("    %-10s %28s %28s", "期間", "── アシ原 ──", "── その他 ──"))
     for (p in levels(d$.period)) {
       out <- c()
       for (rd in c(TRUE, FALSE)) {
         ev <- ev_of(d[d$SPC == s & d$.period == p & !is.na(d$.reed) & d$.reed == rd, ,
                       drop = FALSE])
-        out <- c(out, if (length(ev))
-          sprintf("%10s %8.0f %8.0f", format(length(ev), big.mark = ","),
-                  stats::median(ev), stats::quantile(ev, 0.95, names = FALSE))
-          else sprintf("%10s %8s %8s", "—", "—", "—"))
+        ne <- sum(eff_rd$.period == p & !is.na(eff_rd$.reed) & eff_rd$.reed == rd)
+        out <- c(out, if (length(ev) && ne)
+          sprintf("%7s %7.3f %5.0f %6.0f", format(length(ev), big.mark = ","),
+                  length(ev) / ne, stats::median(ev),
+                  stats::quantile(ev, 0.95, names = FALSE))
+          else sprintf("%7s %7s %5s %6s", "—", "—", "—", "—"))
       }
-      say(sprintf("    %-10s %s", p, paste(out, collapse = " ")))
+      say(sprintf("    %-10s %s", p, paste(out, collapse = "  ")))
     }
   }
+  say("")
+  say("  ★ **出現率を見ること。** 事象数だけでは努力の変化と区別できない")
 }
 
 # ===========================================================================
