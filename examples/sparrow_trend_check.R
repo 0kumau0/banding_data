@@ -53,7 +53,7 @@ t_start <- Sys.time()
   if (is.na(i) || i == length(.args)) default else .args[i + 1L]
 }
 .known <- c("--dbf", "--place", "--splist", "--species", "--spc", "--breaks",
-            "--res", "--maxgap", "--out", "--list")
+            "--res", "--maxgap", "--out", "--list", "--min-periods")
 .bad <- setdiff(grep("^--", .args, value = TRUE), c(.known, "--peek"))
 if (length(.bad)) stop("知らない引数: ", paste(.bad, collapse = " "),
                        "\n使えるのは: ", paste(c(.known, "--peek"), collapse = " "))
@@ -315,22 +315,40 @@ tb <- table(as.integer(n_pd))
 for (k in names(tb))
   say(sprintf("    %2s 期間: %6s 箇所%s", k, format(tb[[k]], big.mark = ","),
               if (as.integer(k) == np) "  ← 全期間で稼働" else ""))
-full <- names(n_pd)[n_pd == np]
+## ★ 継続地点。既定は全期間だが、`--min-periods` で緩められる
+## （42箇所では少ないので、4期間以上なら178箇所になる、といった調整）
+MINP <- as.integer(.opt("--min-periods", as.character(np)))
+full <- names(n_pd)[n_pd >= MINP]
 say("")
-say(sprintf("  **全 %d 期間で稼働: %s 箇所**", np, format(length(full), big.mark = ",")))
+say(sprintf("  **%d 期間以上で稼働: %s 箇所**（--min-periods で変えられる）",
+            MINP, format(length(full), big.mark = ",")))
+
+## ★★ **その地点だけの努力量**で割る。
+## 2026-10-01 の初版は全国の延べ調査日で割っており、**分母が合っていなかった**。
+## 継続地点の記録が減っていても、そこでの努力が減っただけかもしれない
 if (length(full)) {
-  xs <- d[d$PCODE %in% full & d$.sp == SPP[1], , drop = FALSE]
-  say(sprintf("    そこでの %s の記録: %s 件 / 個体 %s", LABEL(SPP[1]),
-              format(nrow(xs), big.mark = ","),
-              format(length(unique(xs$.ring)), big.mark = ",")))
-  say("    期間ごとの記録数:")
-  for (pd in levels(d$.period))
-    say(sprintf("      %-10s %8s", pd,
-                format(sum(xs$.period == pd), big.mark = ",")))
+  dsub <- d[d$PCODE %in% full, , drop = FALSE]
+  say("")
+  say("  継続地点だけでの 単位努力あたり捕獲数（CPUE）:")
+  say(sprintf("    %-10s %11s %s", "期間", "延べ調査日",
+              paste(sprintf("%14s", vapply(SPP, LABEL, "")), collapse = "")))
+  for (pd in levels(d$.period)) {
+    e <- dsub[dsub$.period == pd, , drop = FALSE]
+    ed <- nrow(unique(e[, c("PCODE", "YEAR", "DAY")]))
+    cpue <- vapply(SPP, function(sp) {
+      n <- sum(e$.sp == sp); if (ed > 0) n / ed else NA_real_ }, numeric(1))
+    cnt <- vapply(SPP, function(sp) sum(e$.sp == sp), numeric(1))
+    say(sprintf("    %-10s %11s %s", pd, format(ed, big.mark = ","),
+                paste(sprintf("%7s/%6.3f", format(cnt, big.mark = ","), cpue),
+                      collapse = "")))
+  }
+  say("")
+  say("    ＊ 「記録数/CPUE」。**この分母はこの地点群だけの延べ調査日**")
+  say("    ★ ここでスズメだけが減って対照種が横ばいなら、")
+  say("      **調査地の移動では説明できない**実質的な変化を示す")
 }
 say("")
-say("  ★ ここが多ければ、**継続地点だけに限定した解析**ができる。")
-say("    調査地の移動という交絡を断てるので、トレンドの信頼性が大きく上がる")
+say("  ★ 継続地点が多いほど、**調査地の移動という交絡を断てる**")
 
 # ===========================================================================
 # §6 スズメはどんな環境の地点で捕れているか
@@ -351,7 +369,96 @@ if ("HABITAT" %in% names(place)) {
   say("  ★ **スズメは人の生活圏の鳥**だが、標識地はヨシ原・森林が多い。")
   say("    「ついでに捕れている」なら、密度の水準は全国を代表しない")
   say("    （トレンドは、偏りが時代を通じて一定なら有効でありうる）")
+
+  ## ★★ アシ原かどうかで層別する。
+  ## スズメの捕獲の約半分がアシ原で、これは**冬のねぐら**を捕っている。
+  ## ヨシ原の面積や質が変われば、個体数と無関係に捕獲が変わる。
+  ## **層別して傾向が違えば、その脅威が現実のものだと分かる。**
+  ## 表記ゆれ（アシ原 / ｱｼ原 / ヨシ / 河川敷・アシ原）を拾う
+  dh$.reed <- grepl("アシ|ｱｼ|ヨシ|ﾖｼ",
+                    ifelse(is.na(dh$HABITAT), "", dh$HABITAT))
+  say("")
+  say("  ── アシ原かどうかで層別した CPUE ──")
+  for (sp in SPP) {
+    say(sprintf("    【%s】", LABEL(sp)))
+    say(sprintf("      %-10s %12s %12s %12s %12s", "期間",
+                "アシ原 努力", "アシ原 CPUE", "その他 努力", "その他 CPUE"))
+    for (pd in levels(d$.period)) {
+      z <- dh[dh$.period == pd, , drop = FALSE]
+      out <- c()
+      for (rd in c(TRUE, FALSE)) {
+        zz <- z[z$.reed == rd, , drop = FALSE]
+        ed <- nrow(unique(zz[, c("PCODE", "YEAR", "DAY")]))
+        n  <- sum(zz$.sp == sp)
+        out <- c(out, sprintf("%12s %12s", format(ed, big.mark = ","),
+                              if (ed > 0) sprintf("%.3f", n / ed) else "—"))
+      }
+      say(sprintf("      %-10s %s", pd, paste(out, collapse = " ")))
+    }
+  }
+  say("")
+  say("    ★ **両方で同じように減っていれば、ヨシ原の事情では説明できない。**")
+  say("      アシ原だけで減っていれば、ねぐら環境の変化を疑う必要がある")
 }
+
+# ===========================================================================
+# §7 年ごとの推移（10年区切りは粗すぎる）
+# ===========================================================================
+say("")
+hr(); say("§7 年ごとの単位努力あたり捕獲数"); hr()
+say("  10年区切りでは5点しかなく、変化がいつ起きたかも見えない。年単位で出す。")
+
+yrs <- sort(unique(d$YEAR))
+eff_y <- vapply(yrs, function(y) {
+  z <- d[d$YEAR == y, , drop = FALSE]
+  nrow(unique(z[, c("PCODE", "DAY")])) }, numeric(1))
+cnt_y <- sapply(SPP, function(sp) vapply(yrs, function(y)
+  sum(d$YEAR == y & d$.sp == sp), numeric(1)))
+cpue_y <- sweep(as.matrix(cnt_y), 1, eff_y, "/")
+colnames(cpue_y) <- SPP
+
+say("")
+say(sprintf("  %6s %11s %s", "年", "延べ調査日",
+            paste(sprintf("%14s", vapply(SPP, LABEL, "")), collapse = "")))
+for (i in seq_along(yrs))
+  say(sprintf("  %6d %11s %s", yrs[i], format(eff_y[i], big.mark = ","),
+              paste(sprintf("%7s/%6.3f", format(cnt_y[i, ], big.mark = ","),
+                            cpue_y[i, ]), collapse = "")))
+
+## --- 図 ---------------------------------------------------------------------
+FIG <- "reports/figures/sparrow-fig-cpue.png"
+dir.create(dirname(FIG), showWarnings = FALSE, recursive = TRUE)
+png(FIG, width = 1200, height = 900, res = 110)
+op <- par(mfrow = c(2, 1), mar = c(4, 4.5, 2.5, 1))
+cols <- c("#e31a1c", "#1f78b4", "#33a02c", "#ff7f00", "#6a3d9a")
+ok <- is.finite(cpue_y) & cpue_y > 0
+matplot(yrs, cpue_y, type = "n", log = "y", xlab = "", las = 1,
+        ylab = "単位努力あたり捕獲数（対数）",
+        main = "年ごとの CPUE（延べ調査日あたり）",
+        ylim = range(cpue_y[ok], na.rm = TRUE))
+for (j in seq_along(SPP)) {
+  lines(yrs, cpue_y[, j], col = cols[j], lwd = 2)
+  points(yrs, cpue_y[, j], col = cols[j], pch = 16, cex = 0.5)
+}
+legend("bottomleft", legend = vapply(SPP, LABEL, ""), col = cols[seq_along(SPP)],
+       lwd = 2, bty = "n", cex = 0.85)
+par(mar = c(4.5, 4.5, 2, 1))
+barplot(eff_y, names.arg = ifelse(yrs %% 5 == 0, yrs, ""), las = 2,
+        col = "#7fcdbb", border = NA, ylab = "延べ調査日",
+        main = "努力量（ステーション × 日）")
+par(op); dev.off()
+say("")
+say("  図: ", FIG)
+say("")
+say("  ★ **対数軸**にしてある。平行に動いていれば努力や方法の変化、")
+say("    スズメだけが下がっていれば実質的な変化")
+
+## 年ごとの表も保存
+write.csv(data.frame(year = yrs, station_days = eff_y,
+                     setNames(as.data.frame(cnt_y), paste0("n_", SPP)),
+                     setNames(as.data.frame(cpue_y), paste0("cpue_", SPP))),
+          paste0(OUT, "_annual.csv"), row.names = FALSE, fileEncoding = "UTF-8")
+say("  保存: ", OUT, "_annual.csv")
 
 # ===========================================================================
 # §7 保存
@@ -363,8 +470,9 @@ say("")
 say("  保存: ", OUT, ".csv（集計値のみ）")
 say(sprintf("  所要 %.1f 分", as.numeric(difftime(Sys.time(), t_start, units = "mins"))))
 say("")
-say("  ★ この下検分で見るべき4点")
-say("    1. **全期間のつながり（§4）** … σ をプールして推定できるか。**ここが本丸**")
-say("    2. 継続ステーション（§5）… 調査地の移動という交絡を断てるか")
-say("    3. 努力量の時代変化（§4 の延べ調査日）… 交絡の深刻さ")
-say("    4. 期間をまたぐ個体（§3）… 期間ごとのデータが独立か")
+say("  ★ 見るべき点")
+say("    1. **全期間のつながり（§4）** … σ をプールして推定できるか")
+say("    2. **継続地点だけの CPUE（§5）** … 調査地の移動を断ったトレンド。**本命**")
+say("    3. **アシ原かどうかの層別（§6）** … 冬のねぐらの事情で説明できるか")
+say("    4. **年ごとの推移（§7・図）** … 変化がいつ起きたか。対照種と平行か")
+say("    5. 期間をまたぐ個体（§3）… 期間ごとのデータが独立か")
