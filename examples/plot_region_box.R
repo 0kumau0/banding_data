@@ -103,11 +103,17 @@ same <- scan[scan$W == best$W & scan$res == best$res & scan$n_pair >= NPAIR, , d
 say("")
 say(sprintf("  同じ幅・解像度で つながり %d 本以上になる箱: **%s 通り**",
             NPAIR, format(nrow(same), big.mark = ",")))
-if (nrow(same) <= 3) {
-  say("    → **置き場所がほとんど無い。位置に対して脆い。**")
+## ★ **個数ではなく「広がり」で判定する**（2026-10-01 に直した）。
+## 6通りあっても中心が 20km × 10km に固まっていれば、箱の幅 800km に対して
+## 2.5% / 1.25% で**実質的に1点**。個数だけを見ると誤った安心をする
+sx <- diff(range(same$cx)); sy <- diff(range(same$cy))
+say(sprintf("    中心の広がり: x %.0f km / y %.0f km（箱の幅 %.0f km に対して %.1f%% / %.1f%%）",
+            sx, sy, best$W, 100 * sx / best$W, 100 * sy / best$W))
+if (max(sx, sy) < 0.25 * best$W) {
+  say("    → **実質的に1点。位置に対して脆い。**")
+  say("      「11本取れる箱を探して当てた」形になるので、")
+  say("      **なぜその範囲かを事後的にしか説明できない**")
 } else {
-  say(sprintf("    中心の広がり: x %.0f〜%.0f km / y %.0f〜%.0f km",
-              min(same$cx), max(same$cx), min(same$cy), max(same$cy)))
   say("    → 置き場所に幅がある。位置の選択は本質的でない")
 }
 
